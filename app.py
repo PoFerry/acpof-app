@@ -2,9 +2,10 @@
 import sqlite3
 import re
 import io
+from typing import Optional, Tuple
+
 import pandas as pd
 import streamlit as st
-from typing import Optional, Tuple
 
 st.set_page_config(page_title="ACPOF - Gestion Recettes", layout="wide")
 
@@ -69,6 +70,7 @@ def ensure_db():
             type TEXT,
             yield_qty REAL,
             yield_unit INTEGER,
+            sell_price REAL,
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )""")
         conn.execute("""
@@ -96,6 +98,13 @@ def ensure_db():
             [("gramme","g"),("kilogramme","kg"),("millilitre","ml"),("litre","l"),("pièce","pc")]
         )
         conn.commit()
+
+    # Ajout tolérant de la colonne sell_price si base déjà créée
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.execute("ALTER TABLE recipes ADD COLUMN sell_price REAL")
+    except Exception:
+        pass  # colonne déjà existante
 
 def unit_id_by_abbr(conn, abbr: Optional[str]) -> Optional[int]:
     if not abbr:
@@ -133,6 +142,110 @@ def find_ingredient_id(conn, name_raw: str) -> Optional[int]:
     r = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (n,)).fetchone()
     return r[0] if r else None
 
+# ---------- Conversions & calcul de coûts ----------
+
+UNIT_GRAPH = {
+    "g": "mass", "kg": "mass",
+    "ml": "vol", "l": "vol",
+    "pc": "pc",
+}
+
+def same_group(u1: str, u2: str) -> bool:
+    if not u1 or not u2:
+        return False
+    return UNIT_GRAPH.get(u1.lower()) == UNIT_GRAPH.get(u2.lower())
+
+def convert_qty(qty: float, from_u: str, to_u: str) -> Optional[float]:
+    """Convertit qty de from_u vers to_u si conversion simple connue."""
+    if qty is None:
+        return None
+    if not from_u or not to_u:
+        return None
+    f, t = from_u.lower(), to_u.lower()
+    if f == t:
+        return qty
+    # masse
+    if f == "kg" and t == "g":  return qty * 1000.0
+    if f == "g"  and t == "kg": return qty / 1000.0
+    # volume
+    if f == "l"  and t == "ml": return qty * 1000.0
+    if f == "ml" and t == "l":  return qty / 1000.0
+    # pièces (pas de conversion générique)
+    return None
+
+def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
+    """
+    Calcule le coût total d'une recette (lot complet).
+    Retourne (total_cost, issues) où issues est une liste d'avertissements.
+    """
+    issues = []
+    with sqlite3.connect(DB_FILE) as conn:
+        rows = pd.read_sql_query("""
+            SELECT 
+                ri.quantity        AS qty_recipe,
+                ur.abbreviation    AS unit_recipe,
+                i.cost_per_unit    AS cpu,          -- coût par unité par défaut de l'ingrédient
+                ui.abbreviation    AS unit_ing      -- unité par défaut de l'ingrédient (base coût)
+            FROM recipe_ingredients ri
+            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
+            LEFT JOIN units ur ON ur.unit_id = ri.unit
+            LEFT JOIN units ui ON ui.unit_id = i.unit_default
+            WHERE ri.recipe_id = ?
+        """, conn, params=(recipe_id,))
+    if rows.empty:
+        return 0.0, ["Aucun ingrédient lié."]
+
+    total = 0.0
+    for _, r in rows.iterrows():
+        qty_r = r["qty_recipe"]
+        unit_r = (r["unit_recipe"] or "").lower()
+        cpu    = r["cpu"]
+        unit_i = (r["unit_ing"] or "").lower()
+
+        if pd.isna(qty_r) or qty_r is None or str(qty_r) == "":
+            issues.append("Quantité manquante pour un ingrédient.")
+            continue
+        try:
+            qty_r = float(qty_r)
+        except:
+            issues.append(f"Quantité invalide '{qty_r}'.")
+            continue
+
+        if pd.isna(cpu):
+            issues.append("Coût unitaire manquant pour un ingrédient.")
+            continue
+
+        # Si pas d’unité renseignée sur la ligne, on suppose l’unité par défaut de l’ingrédient
+        if not unit_r and unit_i:
+            unit_r = unit_i
+
+        # Conversion vers l’unité de coût
+        if unit_i and unit_r:
+            if unit_r == unit_i:
+                qty_base = qty_r
+            elif same_group(unit_r, unit_i):
+                conv = convert_qty(qty_r, unit_r, unit_i)
+                if conv is None:
+                    issues.append(f"Conversion impossible {unit_r}→{unit_i}.")
+                    continue
+                qty_base = conv
+            else:
+                issues.append(f"Incompatibilité d’unités {unit_r} vs {unit_i}.")
+                continue
+        else:
+            qty_base = qty_r  # fallback si aucune info d’unité
+
+        try:
+            line_cost = float(qty_base) * float(cpu)
+        except:
+            issues.append("Multiplication qty * cpu impossible.")
+            continue
+
+        if not pd.isna(line_cost):
+            total += line_cost
+
+    return (total if total is not None else None), issues
+
 # =========================
 # Import ingrédients (CSV)
 # =========================
@@ -141,12 +254,11 @@ def show_import_ingredients():
     st.header("📦 Importer les ingrédients (CSV)")
 
     st.caption("""
-    CSV attendu (flexible) — colonnes utiles que je tente de reconnaître :
+    CSV attendu (flexible) — colonnes utiles reconnues :
     - **Description de produit** (nom ingrédient)
-    - **UDM d'inventaire** (unité par défaut: g, kg, ml, l, unité…)
+    - **UDM d'inventaire** (g, kg, ml, l, unité…)
     - **Prix pour recette** ou **Prix unitaire produit** (coût par unité de l’UDM)
     - (optionnel) **Nom Fournisseur**, **Catégorie**
-    Les autres colonnes seront ignorées. Les valeurs non numériques sont sautées.
     """)
 
     up = st.file_uploader("Téléverser le CSV d’ingrédients", type=["csv"])
@@ -213,16 +325,15 @@ def show_import_recipes():
 
     st.caption("""
     Choisis le mode :
-    - **Entêtes FR** : colonnes nommées "Titre de la recette", "Type de recette",
-      "Ingrédient 1" / "Format ingrédient 1" / "Quantité ingrédient 1", "Étape 1" / "Temps étape 1", etc.
-    - **Positions fixes** (ton fichier) :
-      - Ingrédient 1 = **I (nom)**, **J (unité)**, **K (quantité)**, puis **tous les 3 colonnes** jusqu’à **avant CG**
+    - **Entêtes FR** : colonnes "Titre de la recette", "Type de recette",
+      "Ingrédient 1/Format ingrédient 1/Quantité ingrédient 1", "Étape 1/Temps étape 1", etc.
+    - **Positions fixes** :
+      - Ingrédient 1 = **I (nom)**, **J (unité)**, **K (quantité)**, puis +3 colonnes jusqu’à **avant CG**
       - Étape 1 = **CG**, **Temps 1 = CH**, Étape 2 = **CI**, Temps 2 = **CJ**, … jusqu’à **CZ**
     """)
 
     mode = st.radio("Mode d’import :", ["Entêtes FR", "Positions fixes"], horizontal=True)
 
-    # Conversion "A" -> index 0-based
     def col_index(col_letters: str) -> int:
         col_letters = str(col_letters).strip().upper()
         n = 0
@@ -244,7 +355,6 @@ def show_import_recipes():
     if not up:
         return
 
-    # Lecture souple
     try:
         df = pd.read_csv(up, sep=None, engine="python", dtype=str).fillna("")
     except Exception:
@@ -254,7 +364,6 @@ def show_import_recipes():
     st.dataframe(df.head(), use_container_width=True)
     st.caption(f"{df.shape[0]} lignes, {df.shape[1]} colonnes.")
 
-    # Détection entêtes pour mode “Entêtes FR”
     def norm_col(c): return " ".join(str(c).strip().lower().split())
     colmap = {norm_col(c): c for c in df.columns}
     TITLE = colmap.get("titre de la recette") or colmap.get("titre")
@@ -263,7 +372,7 @@ def show_import_recipes():
     YUNIT = colmap.get("format rendement")
 
     if mode == "Entêtes FR" and not TITLE:
-        st.error("Mode 'Entêtes FR' sélectionné, mais la colonne **'Titre de la recette'** est introuvable. "
+        st.error("Mode 'Entêtes FR' : colonne **'Titre de la recette'** introuvable. "
                  "Passe en 'Positions fixes' ou renomme l’en-tête.")
         return
 
@@ -316,7 +425,6 @@ def show_import_recipes():
 
         # 2) Ingrédients + 3) Étapes
         for _, row in df.iterrows():
-            # identifie recette
             if mode == "Entêtes FR":
                 rec_name = clean_text(row[TITLE])
             else:
@@ -330,14 +438,13 @@ def show_import_recipes():
             if not rid:
                 continue
 
-            # IMPORTANT : on efface les anciennes lignes de cette recette (re-import propre)
+            # Re-import propre
             conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (rid,))
 
             inserted_lines = 0
             inserted_steps = 0
 
             if mode == "Entêtes FR":
-                # ingrédients via entêtes
                 for n in range(1, 36):
                     ing_col = colmap.get(f"ingrédient {n}")
                     if not ing_col:
@@ -364,7 +471,6 @@ def show_import_recipes():
                     inserted_lines += 1
                     line_ins += 1
 
-                # étapes via entêtes
                 conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
                 for n in range(1, 21):
                     step_col = colmap.get(f"étape {n}")
@@ -389,10 +495,9 @@ def show_import_recipes():
                     step_ins += 1
 
             else:
-                # positions fixes
                 cells = [clean_text(x) for x in row.values.tolist()]
 
-                # ingrédients: triplets (nom, unité, qty) en partant de ING_START jusqu'à avant STEPS_START
+                # ingrédients: triplets (nom, unité, qty) à partir de ING_START jusqu'à avant STEPS_START
                 last_ing_col = min(STEPS_START, len(cells))
                 c = ING_START
                 while c + 2 < last_ing_col:
@@ -477,7 +582,7 @@ def show_view_recipes():
     with sqlite3.connect(DB_FILE) as conn:
         base = """
             SELECT r.recipe_id, r.name, COALESCE(r.type,'') AS type,
-                   r.yield_qty, u.abbreviation AS yield_unit
+                   r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
             FROM recipes r
             LEFT JOIN units u ON u.unit_id = r.yield_unit
         """
@@ -512,7 +617,6 @@ def show_view_recipes():
         c3.metric("Rendement", "—")
 
     with sqlite3.connect(DB_FILE) as conn:
-        # Débogage brut : combien de lignes ?
         raw_count = conn.execute("SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=?", (rid,)).fetchone()[0]
         raw_steps = conn.execute("SELECT COUNT(*) FROM recipe_steps WHERE recipe_id=?", (rid,)).fetchone()[0]
 
@@ -555,30 +659,32 @@ def show_view_recipes():
         st.subheader("Ingrédients")
         st.dataframe(table, use_container_width=True)
 
-        # coût (optionnel)
-        def convert(qty, unit, ing_unit):
-            if pd.isna(qty) or qty is None:
-                return None
-            unit = (unit or "").lower()
-            ing_unit = (ing_unit or "").lower()
-            if unit == ing_unit: return qty
-            if unit == "kg" and ing_unit == "g":  return qty * 1000.0
-            if unit == "g"  and ing_unit == "kg": return qty / 1000.0
-            if unit == "l"  and ing_unit == "ml": return qty * 1000.0
-            if unit == "ml" and ing_unit == "l":  return qty / 1000.0
-            return None
+    # ------ Coût recette ------
+    total_cost, issues = compute_recipe_cost(rid)
+    st.subheader("Coût de nourriture")
+    cA, cB, cC = st.columns(3)
+    cA.metric("Coût total (lot)", f"{total_cost:.2f} $" if total_cost is not None else "—")
 
-        df["qty_in_ing_unit"] = df.apply(lambda r: convert(r["qty"], r["unit"], r["ing_unit"]), axis=1)
+    unit_cost_label = "—"
+    if total_cost is not None and pd.notna(rrow["yield_qty"]) and rrow["yield_qty"] and float(rrow["yield_qty"]) > 0:
+        unit_cost = total_cost / float(rrow["yield_qty"])
+        if rrow["yield_unit"]:
+            unit_cost_label = f"{unit_cost:.4f} $ / {rrow['yield_unit']}"
+        else:
+            unit_cost_label = f"{unit_cost:.4f} $ / unité de rendement"
+    cB.metric("Coût / unité de rendement", unit_cost_label)
 
-        def line_cost(row):
-            q, c = row["qty_in_ing_unit"], row["cost_per_unit"]
-            if pd.isna(q) or pd.isna(c): return None
-            try: return float(q) * float(c)
-            except: return None
+    sell_price = None if pd.isna(rrow.get("sell_price")) else rrow.get("sell_price")
+    if sell_price and total_cost is not None and sell_price > 0:
+        margin = (sell_price - total_cost) / sell_price * 100.0
+        cC.metric("Marge brute (%)", f"{margin:.1f}%")
+    else:
+        cC.metric("Marge brute (%)", "—")
 
-        df["line_cost"] = df.apply(line_cost, axis=1)
-        total = df["line_cost"].sum(skipna=True)
-        st.metric("💰 Coût total (lot)", f"{total:.2f} $" if pd.notna(total) else "—")
+    if issues:
+        with st.expander("⚠️ Avertissements de calcul"):
+            for it in issues:
+                st.write("- " + str(it))
 
     # Méthode
     with sqlite3.connect(DB_FILE) as conn:
@@ -604,6 +710,11 @@ def show_view_recipes():
     with st.expander("🔎 Détails techniques (debug)"):
         st.write("Premières lignes dans recipe_ingredients :")
         st.dataframe(sample, use_container_width=True)
+
+# =========================
+# Corriger recette (édition)
+# =========================
+
 def show_edit_recipe():
     st.header("🛠️ Corriger une recette")
 
@@ -620,7 +731,7 @@ def show_edit_recipe():
     # Charger métadonnées + unités + lignes ingrédients + étapes
     with sqlite3.connect(DB_FILE) as conn:
         meta = pd.read_sql_query("""
-            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
             FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit
             WHERE r.recipe_id=?
         """, conn, params=(rec_id,))
@@ -642,18 +753,33 @@ def show_edit_recipe():
 
     # ----- Métadonnées -----
     st.subheader("Informations de la recette")
-    colA, colB = st.columns([2, 1])
+    colA, colB, colC = st.columns([2, 1, 1])
     with colA:
         new_name = st.text_input("Nom", value=meta["name"].iloc[0])
         new_type = st.text_input("Type", value=(meta["type"].iloc[0] or ""))
     with colB:
-        new_yield_qty = st.number_input("Rendement - quantité", min_value=0.0, value=float(meta["yield_qty"].iloc[0]) if pd.notna(meta["yield_qty"].iloc[0]) else 0.0, step=0.1, format="%.3f")
+        new_yield_qty = st.number_input(
+            "Rendement - quantité", min_value=0.0,
+            value=float(meta["yield_qty"].iloc[0]) if pd.notna(meta["yield_qty"].iloc[0]) else 0.0,
+            step=0.1, format="%.3f"
+        )
         unit_choices = units["abbreviation"].tolist()
-        new_yield_unit = st.selectbox("Rendement - unité", options=[""] + unit_choices, index=(unit_choices.index(meta["yield_unit"].iloc[0]) + 1) if pd.notna(meta["yield_unit"].iloc[0]) and meta["yield_unit"].iloc[0] in unit_choices else 0)
+        new_yield_unit = st.selectbox(
+            "Rendement - unité",
+            options=[""] + unit_choices,
+            index=(unit_choices.index(meta["yield_unit"].iloc[0]) + 1)
+                  if pd.notna(meta["yield_unit"].iloc[0]) and meta["yield_unit"].iloc[0] in unit_choices else 0
+        )
+    with colC:
+        new_sell_price = st.number_input(
+            "Prix de vente",
+            min_value=0.0,
+            value=float(meta["sell_price"].iloc[0]) if pd.notna(meta["sell_price"].iloc[0]) else 0.0,
+            step=0.1, format="%.2f"
+        )
 
     # ----- Ingrédients (éditeur dynamique) -----
     st.subheader("Ingrédients")
-    # Prépare DF éditable
     if ing_lines.empty:
         ing_edit = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité"])
     else:
@@ -668,14 +794,14 @@ def show_edit_recipe():
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "Ingrédient": st.column_config.TextColumn(help="Nom exact de l'ingrédient (nouveau nom créera l'ingrédient)"),
+            "Ingrédient": st.column_config.TextColumn(help="Nom exact de l'ingrédient (nouveau nom = crée l'ingrédient)"),
             "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01, help="Quantité pour cette recette"),
-            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices, help="Unité de la quantité (vide = inconnue)"),
+            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices, help="Unité de la quantité"),
         },
         key="ing_editor",
     )
 
-    st.caption("Astuce: tu peux ajouter des lignes, modifier/supprimer, puis 'Enregistrer' ci-dessous.")
+    st.caption("Astuce: tu peux ajouter/modifier/supprimer des lignes, puis 'Enregistrer'.")
 
     # ----- Étapes (éditeur dynamique) -----
     st.subheader("Méthode")
@@ -702,7 +828,6 @@ def show_edit_recipe():
     save = st.button("💾 Enregistrer les modifications", type="primary")
 
     if save:
-        # Validations légères
         v_name = clean_text(new_name)
         if not v_name:
             st.error("Le nom de la recette ne peut pas être vide.")
@@ -726,23 +851,21 @@ def show_edit_recipe():
             tmin = to_float_safe(r.get("Temps (min)"))
             step_rows.append((txt, tmin))
 
-        # Écriture DB
         try:
             with sqlite3.connect(DB_FILE) as conn:
                 conn.execute("BEGIN")
-
-                # 1) MAJ métadonnées
                 yuid = unit_id_by_abbr(conn, new_yield_unit) if new_yield_unit else None
 
-                # gérer un éventuel renommage (garde l'id)
-                # si le nom change et qu’il existe ailleurs -> unique constraint lèvera erreur; on gère ci-dessous.
                 conn.execute("""
                     UPDATE recipes
-                    SET name=?, type=?, yield_qty=?, yield_unit=?
+                    SET name=?, type=?, yield_qty=?, yield_unit=?, sell_price=?
                     WHERE recipe_id=?
-                """, (v_name, clean_text(new_type) or None, new_yield_qty if new_yield_qty > 0 else None, yuid, rec_id))
+                """, (v_name, clean_text(new_type) or None,
+                      new_yield_qty if new_yield_qty > 0 else None,
+                      yuid,
+                      new_sell_price if new_sell_price > 0 else None,
+                      rec_id))
 
-                # 2) Sync ingrédients
                 conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (rec_id,))
                 for (ing, qty, uabbr) in ing_rows:
                     iid = find_ingredient_id(conn, ing)
@@ -752,7 +875,6 @@ def show_edit_recipe():
                         VALUES (?,?,?,?)
                     """, (rec_id, iid, qty, uid))
 
-                # 3) Sync étapes
                 conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rec_id,))
                 step_no = 1
                 for (txt, tmin) in step_rows:
@@ -772,6 +894,59 @@ def show_edit_recipe():
         except Exception as e:
             st.error(f"Erreur pendant l’enregistrement : {e}")
 
+# =========================
+# Page coûts global
+# =========================
+
+def show_recipe_costs():
+    st.header("💰 Coût des recettes")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        recipes = pd.read_sql_query("""
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+            ORDER BY r.name
+        """, conn)
+
+    if recipes.empty:
+        st.info("Aucune recette en base.")
+        return
+
+    rows = []
+    total_missing = 0
+    for _, r in recipes.iterrows():
+        rid = int(r["recipe_id"])
+        total_cost, issues = compute_recipe_cost(rid)
+        total_missing += len(issues)
+        unit_cost = None
+        if total_cost is not None and pd.notna(r["yield_qty"]) and r["yield_qty"] and float(r["yield_qty"]) > 0:
+            unit_cost = total_cost / float(r["yield_qty"])
+
+        margin = None
+        if r["sell_price"] and total_cost is not None and r["sell_price"] > 0:
+            margin = (float(r["sell_price"]) - total_cost) / float(r["sell_price"]) * 100.0
+
+        rows.append({
+            "Recette": r["name"],
+            "Type": r["type"] or "",
+            "Rendement": f"{r['yield_qty']:.3f} {r['yield_unit']}" if pd.notna(r["yield_qty"]) and r["yield_unit"] else "",
+            "Coût total ($)": None if total_cost is None else round(total_cost, 2),
+            "Coût / unité rend. ($)": None if unit_cost is None else round(unit_cost, 4),
+            "Prix vente ($)": None if pd.isna(r["sell_price"]) or r["sell_price"] is None else round(float(r["sell_price"]), 2),
+            "Marge (%)": None if margin is None else round(margin, 1),
+            "Avertissements": " ; ".join(issues[:3]) + (" ..." if len(issues) > 3 else "")
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
+
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Exporter CSV", data=csv, file_name="couts_recettes.csv", mime="text/csv")
+
+    if total_missing > 0:
+        st.caption(f"⚠️ Remarque : {total_missing} avertissement(s) détecté(s). "
+                   f"Utilise 'Corriger recette' pour compléter unités ou coûts manquants.")
 
 # =========================
 # Accueil
@@ -783,7 +958,9 @@ def show_home():
     Bienvenue! Utilise le menu latéral :
     - **Importer ingrédients** : charge ton CSV d'intrants (prix, unités, etc.)
     - **Importer recettes** : charge ton CSV de recettes (**entêtes FR** ou **positions fixes I/J/K … CG..CZ**)
-    - **Consulter recettes** : recherche et affiche ingrédients + quantités + méthode
+    - **Consulter recettes** : recherche et affiche ingrédients + quantités + méthode + coût
+    - **Corriger recette** : édite une recette (ingrédients, quantités, étapes, prix de vente…)
+    - **Coût des recettes** : vue tableau (coût total, coût/unité, prix de vente, marge) + export CSV
     """)
 
 # =========================
@@ -797,9 +974,11 @@ def main():
         "Importer ingrédients": show_import_ingredients,
         "Importer recettes": show_import_recipes,
         "Consulter recettes": show_view_recipes,
-        "Corriger recette": show_edit_recipe,   # ⬅️ nouvelle page
+        "Corriger recette": show_edit_recipe,
+        "Coût des recettes": show_recipe_costs,
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
+
 if __name__ == "__main__":
     main()
