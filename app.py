@@ -99,7 +99,11 @@ def page_import_recipes(conn):
 
 def page_recipes(conn):
     st.header("Recettes")
-    df = pd.read_sql_query(\"\\"\n        SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit\n        FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit\n        ORDER BY r.name\n    \"\\"\n, conn)
+    df = pd.read_sql_query("""
+        SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit
+        FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit
+        ORDER BY r.name
+    """, conn)
     st.dataframe(df)
 
 def page_ingredients(conn):
