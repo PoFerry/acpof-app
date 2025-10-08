@@ -801,3 +801,5 @@ def main():
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
+if __name__ == "__main__":
+    main()
