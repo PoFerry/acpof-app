@@ -121,6 +121,7 @@ CSV attendu (flexible) - colonnes utiles reconnues :
 - (optionnel) **Nom Fournisseur**, **Catégorie**
 """)
 
+
     up = st.file_uploader("Téléverser le CSV d’ingrédients", type=["csv"])
     if not up:
         return
