@@ -604,6 +604,174 @@ def show_view_recipes():
     with st.expander("🔎 Détails techniques (debug)"):
         st.write("Premières lignes dans recipe_ingredients :")
         st.dataframe(sample, use_container_width=True)
+def show_edit_recipe():
+    st.header("🛠️ Corriger une recette")
+
+    # Sélecteur de recette
+    with sqlite3.connect(DB_FILE) as conn:
+        recipes = pd.read_sql_query("SELECT recipe_id, name FROM recipes ORDER BY name", conn)
+    if recipes.empty:
+        st.info("Aucune recette dans la base. Importe d'abord des recettes.")
+        return
+
+    rec_name = st.selectbox("Choisir une recette à corriger", recipes["name"])
+    rec_id = int(recipes.loc[recipes["name"] == rec_name, "recipe_id"].iloc[0])
+
+    # Charger métadonnées + unités + lignes ingrédients + étapes
+    with sqlite3.connect(DB_FILE) as conn:
+        meta = pd.read_sql_query("""
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit
+            FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit
+            WHERE r.recipe_id=?
+        """, conn, params=(rec_id,))
+        units = pd.read_sql_query("SELECT abbreviation FROM units ORDER BY abbreviation", conn)
+        ing_lines = pd.read_sql_query("""
+            SELECT i.name AS ingredient, ri.quantity AS qty, u.abbreviation AS unit
+            FROM recipe_ingredients ri
+            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
+            LEFT JOIN units u ON u.unit_id = ri.unit
+            WHERE ri.recipe_id=?
+            ORDER BY i.name
+        """, conn, params=(rec_id,))
+        steps_df = pd.read_sql_query("""
+            SELECT step_no, instruction, time_minutes
+            FROM recipe_steps
+            WHERE recipe_id=?
+            ORDER BY step_no
+        """, conn, params=(rec_id,))
+
+    # ----- Métadonnées -----
+    st.subheader("Informations de la recette")
+    colA, colB = st.columns([2, 1])
+    with colA:
+        new_name = st.text_input("Nom", value=meta["name"].iloc[0])
+        new_type = st.text_input("Type", value=(meta["type"].iloc[0] or ""))
+    with colB:
+        new_yield_qty = st.number_input("Rendement - quantité", min_value=0.0, value=float(meta["yield_qty"].iloc[0]) if pd.notna(meta["yield_qty"].iloc[0]) else 0.0, step=0.1, format="%.3f")
+        unit_choices = units["abbreviation"].tolist()
+        new_yield_unit = st.selectbox("Rendement - unité", options=[""] + unit_choices, index=(unit_choices.index(meta["yield_unit"].iloc[0]) + 1) if pd.notna(meta["yield_unit"].iloc[0]) and meta["yield_unit"].iloc[0] in unit_choices else 0)
+
+    # ----- Ingrédients (éditeur dynamique) -----
+    st.subheader("Ingrédients")
+    # Prépare DF éditable
+    if ing_lines.empty:
+        ing_edit = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité"])
+    else:
+        ing_edit = pd.DataFrame({
+            "Ingrédient": ing_lines["ingredient"].map(clean_text),
+            "Quantité": ing_lines["qty"],
+            "Unité": (ing_lines["unit"].fillna("").map(clean_text)),
+        })
+
+    ing_edit = st.data_editor(
+        ing_edit,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Ingrédient": st.column_config.TextColumn(help="Nom exact de l'ingrédient (nouveau nom créera l'ingrédient)"),
+            "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01, help="Quantité pour cette recette"),
+            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices, help="Unité de la quantité (vide = inconnue)"),
+        },
+        key="ing_editor",
+    )
+
+    st.caption("Astuce: tu peux ajouter des lignes, modifier/supprimer, puis 'Enregistrer' ci-dessous.")
+
+    # ----- Étapes (éditeur dynamique) -----
+    st.subheader("Méthode")
+    if steps_df.empty:
+        steps_edit = pd.DataFrame(columns=["Étape", "Temps (min)"])
+    else:
+        steps_edit = pd.DataFrame({
+            "Étape": steps_df["instruction"].map(clean_text),
+            "Temps (min)": steps_df["time_minutes"],
+        })
+
+    steps_edit = st.data_editor(
+        steps_edit,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Étape": st.column_config.TextColumn(width="large", help="Texte de l'instruction"),
+            "Temps (min)": st.column_config.NumberColumn(format="%.1f", step=0.5, help="Facultatif"),
+        },
+        key="steps_editor",
+    )
+
+    st.divider()
+    save = st.button("💾 Enregistrer les modifications", type="primary")
+
+    if save:
+        # Validations légères
+        v_name = clean_text(new_name)
+        if not v_name:
+            st.error("Le nom de la recette ne peut pas être vide.")
+            return
+
+        # Nettoyage des lignes vides
+        ing_rows = []
+        for _, r in ing_edit.iterrows():
+            ing = clean_text(r.get("Ingrédient", ""))
+            if not ing:
+                continue
+            qty = to_float_safe(r.get("Quantité"))
+            uabbr = map_unit_text_to_abbr(r.get("Unité"))
+            ing_rows.append((ing, qty, uabbr))
+
+        step_rows = []
+        for _, r in steps_edit.iterrows():
+            txt = clean_text(r.get("Étape", ""))
+            if not txt:
+                continue
+            tmin = to_float_safe(r.get("Temps (min)"))
+            step_rows.append((txt, tmin))
+
+        # Écriture DB
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("BEGIN")
+
+                # 1) MAJ métadonnées
+                yuid = unit_id_by_abbr(conn, new_yield_unit) if new_yield_unit else None
+
+                # gérer un éventuel renommage (garde l'id)
+                # si le nom change et qu’il existe ailleurs -> unique constraint lèvera erreur; on gère ci-dessous.
+                conn.execute("""
+                    UPDATE recipes
+                    SET name=?, type=?, yield_qty=?, yield_unit=?
+                    WHERE recipe_id=?
+                """, (v_name, clean_text(new_type) or None, new_yield_qty if new_yield_qty > 0 else None, yuid, rec_id))
+
+                # 2) Sync ingrédients
+                conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (rec_id,))
+                for (ing, qty, uabbr) in ing_rows:
+                    iid = find_ingredient_id(conn, ing)
+                    uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+                    conn.execute("""
+                        INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
+                        VALUES (?,?,?,?)
+                    """, (rec_id, iid, qty, uid))
+
+                # 3) Sync étapes
+                conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rec_id,))
+                step_no = 1
+                for (txt, tmin) in step_rows:
+                    conn.execute("""
+                        INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes)
+                        VALUES (?,?,?,?)
+                    """, (rec_id, step_no, txt, tmin))
+                    step_no += 1
+
+                conn.commit()
+
+            st.success("Modifications enregistrées ✅")
+            st.rerun()
+
+        except sqlite3.IntegrityError as e:
+            st.error(f"Conflit en base (nom de recette déjà utilisé ?) : {e}")
+        except Exception as e:
+            st.error(f"Erreur pendant l’enregistrement : {e}")
+
 
 # =========================
 # Accueil
