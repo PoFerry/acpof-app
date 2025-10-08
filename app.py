@@ -108,7 +108,11 @@ def page_recipes(conn):
 
 def page_ingredients(conn):
     st.header("Ingrédients")
-    df = pd.read_sql_query(\"\\"\n        SELECT i.ingredient_id, i.name, i.cost_per_unit, u.abbreviation AS unit\n        FROM ingredients i LEFT JOIN units u ON u.unit_id = i.unit_default\n        ORDER BY i.name\n    \"\\"\n, conn)
+df = pd.read_sql_query("""
+        SELECT i.ingredient_id, i.name, i.cost_per_unit, u.abbreviation AS unit
+        FROM ingredients i LEFT JOIN units u ON u.unit_id = i.unit_default
+        ORDER BY i.name
+    """, conn)
     st.dataframe(df)
 
 
