@@ -797,9 +797,7 @@ def main():
         "Importer ingrédients": show_import_ingredients,
         "Importer recettes": show_import_recipes,
         "Consulter recettes": show_view_recipes,
+        "Corriger recette": show_edit_recipe,   # ⬅️ nouvelle page
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
-
-if __name__ == "__main__":
-    main()
