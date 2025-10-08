@@ -38,12 +38,12 @@ def unit_id_by_abbr(conn, abbr):
         return None
     a = str(abbr).strip().lower()
     aliases = {
-        "/g": "g", "gramme": "g", "grammes": "g",
-        "/kg": "kg",
-        "/ml": "ml",
-        "/l": "l", "litre": "l", "litres": "l",
-        "/unite":"pc","unite":"pc","/unité":"pc","unité":"pc","pièce":"pc","piece":"pc",
-        "portion":"pc","/portion":"pc","pc":"pc",
+        "/g":"g","g":"g","gramme":"g","grammes":"g",
+        "/kg":"kg","kg":"kg","kilogramme":"kg",
+        "/ml":"ml","ml":"ml",
+        "/l":"l","l":"l","litre":"l","litres":"l",
+        "/unite":"pc","unité":"pc","unite":"pc","/unité":"pc","/unite":"pc","pc":"pc",
+        "pièce":"pc","piece":"pc","portion":"pc","/portion":"pc",
     }
     a = aliases.get(a, a)
     row = conn.execute("SELECT unit_id FROM units WHERE LOWER(abbreviation)=?", (a,)).fetchone()
@@ -96,8 +96,19 @@ def init_db():
             FOREIGN KEY (unit) REFERENCES units(unit_id)
         );
 
+        -- NOUVEAU : étapes de recette
+        CREATE TABLE IF NOT EXISTS recipe_steps (
+            step_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER NOT NULL,
+            step_no INTEGER NOT NULL,
+            instruction TEXT,
+            time_minutes REAL,
+            FOREIGN KEY (recipe_id) REFERENCES recipes(recipe_id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_ri_recipe ON recipe_ingredients(recipe_id);
         CREATE INDEX IF NOT EXISTS idx_ing_name ON ingredients(name);
+        CREATE INDEX IF NOT EXISTS idx_steps_recipe ON recipe_steps(recipe_id, step_no);
         """)
         conn.executemany(
             "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?,?)",
@@ -112,10 +123,10 @@ def show_home():
     st.title("🧾 Gestion ACPOF — Recettes & Ingrédients")
     st.markdown(
         "- 📦 **Importer ingrédients** : ajoute/actualise tes ingrédients (coût unitaire + unité par défaut)\n"
-        "- 🧑‍🍳 **Importer recettes** : importe depuis ton Google Sheet (format large FR) — tolérant aux manques\n"
-        "- 🛠️ **Corriger recettes** : édite recettes et lignes directement dans l’interface\n"
-        "- 📖 **Consulter recettes** : recherche/filtre + détail ingrédients + coût + export\n"
-        "- 💰 **Coût recette** : calcule le coût (avec conversions g↔kg, ml↔L)"
+        "- 🧑‍🍳 **Importer recettes** : import Google Sheet (format large FR) — tolérant aux manques\n"
+        "- 🛠️ **Corriger recettes** : édite recettes et lignes dans l’interface\n"
+        "- 📖 **Consulter recettes** : ingrédients + quantités + méthode + coût\n"
+        "- 💰 **Coût recette** : calcule le coût (conversions g↔kg, ml↔L)"
     )
 
 def show_import_ingredients():
@@ -148,11 +159,11 @@ def show_import_ingredients():
             if "description" in cl or "produit" in cl or cl.startswith("nom"):
                 name_col = c; break
 
-    category_col = pick("category", "catégorie *", "catégorie", "categorie *", "categorie")
-    supplier_col = pick("supplier", "nom fournisseur", "fournisseur")
-    cost_col = pick("cost_per_unit", "prix pour recette", "prix unitaire produit")
+    category_col = pick("category", "catÉgorie *", "catégorie *", "catégorie", "categorie *", "categorie")
+    supplier_col  = pick("supplier", "nom fournisseur", "fournisseur")
+    cost_col      = pick("cost_per_unit", "prix pour recette", "prix unitaire produit")
     price_pkg_col = pick("prix du format d'achat", "prix format d'achat", "prix format achat")
-    qty_unit_col = None
+    qty_unit_col  = None
     for key in cols:
         if "qté unité" in key or "qte unité" in key or "qte unite" in key or "qté_unité" in key or key == "qté unité *":
             qty_unit_col = cols[key]; break
@@ -200,9 +211,9 @@ def show_import_ingredients():
                 if not isinstance(n, str): return None
                 s = n.lower()
                 if "/kg" in s: return unit_id_by_abbr(conn, "kg")
-                if "/g" in s: return unit_id_by_abbr(conn, "g")
+                if "/g"  in s: return unit_id_by_abbr(conn, "g")
                 if "/ml" in s: return unit_id_by_abbr(conn, "ml")
-                if "/l" in s or "/litre" in s: return unit_id_by_abbr(conn, "l")
+                if "/l"  in s or "/litre" in s: return unit_id_by_abbr(conn, "l")
                 if "/unité" in s or "/unite" in s or "/pc" in s: return unit_id_by_abbr(conn, "pc")
                 return None
             unit_ids = df["name"].apply(guess_from_name)
@@ -267,8 +278,8 @@ def show_import_recipes():
 
     colmap = {norm_col(c): c for c in df.columns}
     TITLE = colmap.get("titre de la recette")
-    TYPE = colmap.get("type de recette")
-    YQTY = colmap.get("rendement de la recette")
+    TYPE  = colmap.get("type de recette")
+    YQTY  = colmap.get("rendement de la recette")
     YUNIT = colmap.get("format rendement")
 
     if not TITLE:
@@ -382,9 +393,55 @@ def show_import_recipes():
                 """, (rid, iid, qty, uid))
                 line_ins += 1
 
+        # 3) Étapes (Méthode) : colonnes "Étape n" + "Temps étape n"
+        # on nettoie et importe si présent
+        for _, row in df.iterrows():
+            rec_name = str(row[TITLE]).strip() if TITLE else ""
+            if not rec_name:
+                continue
+            rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
+            if not rid_row:
+                continue
+            rid = rid_row[0]
+
+            # supprime les anciennes étapes pour une réimport propre
+            conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
+
+            # reconstitue un colmap local sûr
+            cm = { " ".join(str(c).strip().lower().split()): c for c in df.columns }
+
+            import re
+            for n in range(1, 21):
+                step_key = f"étape {n}"
+                time_key = f"temps étape {n}"
+                step_col = cm.get(step_key)
+                time_col = cm.get(time_key)
+
+                if not step_col:
+                    continue
+
+                instruction = str(row[step_col]).strip() if row[step_col] is not None else ""
+                if not instruction or instruction.lower() == "#value!":
+                    continue
+
+                raw_time = str(row[time_col]).strip() if time_col and row[time_col] is not None else ""
+                tmatch = re.findall(r"[\d]+(?:[.,]\d+)?", raw_time.replace("\u00A0",""))
+                tmin = None
+                if tmatch:
+                    try:
+                        tmin = float(tmatch[0].replace(",", "."))
+                    except:
+                        tmin = None
+
+                conn.execute(
+                    "INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes) VALUES (?,?,?,?)",
+                    (rid, n, instruction, tmin)
+                )
+
         conn.commit()
 
     st.success(f"Recettes: {meta_ins} insérées, {meta_upd} mises à jour. Lignes: {line_ins}. Nouvelles recettes: {new_rec}. Nouveaux ingrédients: {new_ing}.")
+
     if skipped_meta:
         with st.expander("Lignes de métadonnées ignorées"):
             st.write("\n".join(reasons_meta))
@@ -528,6 +585,7 @@ def show_view_recipes():
     else:
         c3.metric("Rendement", "—")
 
+    # Charger ingrédients pour l’affichage
     with sqlite3.connect(DB_FILE) as conn:
         df = pd.read_sql_query("""
             SELECT i.name AS ingredient,
@@ -537,27 +595,48 @@ def show_view_recipes():
                    iu.abbreviation AS ing_unit
             FROM recipe_ingredients ri
             JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
-            LEFT JOIN units u  ON u.unit_id  = ri.unit
-            LEFT JOIN units iu ON iu.unit_id = i.unit_default
+            LEFT JOIN units u  ON u.unit_id  = ri.unit         -- unité saisie dans la recette
+            LEFT JOIN units iu ON iu.unit_id = i.unit_default  -- unité par défaut de l’ingrédient (pour coût)
             WHERE ri.recipe_id = ?
             ORDER BY i.name
         """, conn, params=(rid,))
 
-    def convert(qty, unit, ing_unit):
-        if pd.isna(qty) or qty is None:
-            return None
-        unit = (unit or "").lower()
-        ing_unit = (ing_unit or "").lower()
-        if unit == ing_unit: return qty
-        if unit == "kg" and ing_unit == "g":  return qty * 1000.0
-        if unit == "g"  and ing_unit == "kg": return qty / 1000.0
-        if unit == "l"  and ing_unit == "ml": return qty * 1000.0
-        if unit == "ml" and ing_unit == "l":  return qty / 1000.0
-        return None
-
+    # --- Ingrédients : table "Ingrédient | Quantité"
     if df.empty:
         st.info("Cette recette n’a pas encore d’ingrédients liés.")
     else:
+        def qty_label(row):
+            q = row["qty"]
+            u = (row["unit"] or "").strip()
+            if pd.isna(q) or q is None or str(q) == "":
+                return "—"
+            try:
+                qf = float(q)
+                return f"{qf:.3f} {u}".strip()
+            except:
+                return f"{q} {u}".strip() or "—"
+
+        table = pd.DataFrame({
+            "Ingrédient": df["ingredient"],
+            "Quantité": df.apply(qty_label, axis=1),
+        }).sort_values("Ingrédient")
+
+        st.subheader("Ingrédients")
+        st.dataframe(table, use_container_width=True)
+
+        # Conversions pour calcul coût (kg↔g, L↔mL)
+        def convert(qty, unit, ing_unit):
+            if pd.isna(qty) or qty is None:
+                return None
+            unit = (unit or "").lower()
+            ing_unit = (ing_unit or "").lower()
+            if unit == ing_unit: return qty
+            if unit == "kg" and ing_unit == "g":  return qty * 1000.0
+            if unit == "g"  and ing_unit == "kg": return qty / 1000.0
+            if unit == "l"  and ing_unit == "ml": return qty * 1000.0
+            if unit == "ml" and ing_unit == "l":  return qty / 1000.0
+            return None
+
         df["qty_in_ing_unit"] = df.apply(lambda r: convert(r["qty"], r["unit"], r["ing_unit"]), axis=1)
 
         def line_cost(row):
@@ -567,20 +646,30 @@ def show_view_recipes():
             except: return None
 
         df["line_cost"] = df.apply(line_cost, axis=1)
-
-        st.subheader("Ingrédients")
-        st.dataframe(
-            df[["ingredient","qty","unit","qty_in_ing_unit","ing_unit","cost_per_unit","line_cost"]],
-            use_container_width=True
-        )
-
         total = df["line_cost"].sum(skipna=True)
         st.metric("💰 Coût total (lot)", f"{total:.2f} $" if pd.notna(total) else "—")
 
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Exporter (CSV)", data=csv, file_name=f"{rrow['name']}_ingredients.csv", mime="text/csv")
+        # Export CSV des ingrédients
+        csv = table.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Exporter Ingrédients (CSV)", data=csv, file_name=f"{rrow['name']}_ingredients.csv", mime="text/csv")
 
-    st.caption("Conversions : kg↔g et L↔mL. Pas de conversion automatique avec 'pc'.")
+    # --- Méthode (Étapes) ---
+    with sqlite3.connect(DB_FILE) as conn:
+        steps = pd.read_sql_query(
+            "SELECT step_no, instruction, time_minutes FROM recipe_steps WHERE recipe_id=? ORDER BY step_no",
+            conn, params=(rid,)
+        )
+
+    st.subheader("Méthode")
+    if steps.empty:
+        st.caption("Aucune méthode enregistrée pour cette recette.")
+    else:
+        md = []
+        for _, r in steps.iterrows():
+            txt = (r["instruction"] or "").strip()
+            badge = f" _(≈ {r['time_minutes']:.0f} min)_" if pd.notna(r["time_minutes"]) else ""
+            md.append(f"{int(r['step_no'])}. {txt}{badge}")
+        st.markdown("\n".join(md))
 
 def show_ingredients():
     st.header("📋 Liste des ingrédients")
@@ -638,8 +727,7 @@ def show_recipe_costs():
             return None
         unit = (unit or "").lower()
         ing_unit = (ing_unit or "").lower()
-        if unit == ing_unit:
-            return qty
+        if unit == ing_unit: return qty
         if unit == "kg" and ing_unit == "g":  return qty * 1000.0
         if unit == "g"  and ing_unit == "kg": return qty / 1000.0
         if unit == "l"  and ing_unit == "ml": return qty * 1000.0
