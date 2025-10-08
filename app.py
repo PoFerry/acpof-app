@@ -93,14 +93,18 @@ def ensure_db():
             category TEXT,
             FOREIGN KEY(unit_default) REFERENCES units(unit_id)
         )""")
-        conn.execute("""
+       conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             type TEXT,
             yield_qty REAL,
             yield_unit INTEGER,
-@@ -244,60 +274,60 @@ def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
+            sell_price REAL,
+            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
+        )
+        """)
+
         if not pd.isna(line_cost):
             total += line_cost
 
