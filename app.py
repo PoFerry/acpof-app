@@ -947,6 +947,241 @@ def show_recipe_costs():
     if total_missing > 0:
         st.caption(f"⚠️ Remarque : {total_missing} avertissement(s) détecté(s). "
                    f"Utilise 'Corriger recette' pour compléter unités ou coûts manquants.")
+def show_manage_ingredients():
+    st.header("🥫 Ingrédients — consulter et créer")
+
+    # --- Filtres de recherche ---
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        q = st.text_input("Recherche (nom contient…)", "")
+    with sqlite3.connect(DB_FILE) as conn:
+        cats = pd.read_sql_query("SELECT DISTINCT COALESCE(category,'') AS cat FROM ingredients ORDER BY cat", conn)
+        sups = pd.read_sql_query("SELECT DISTINCT COALESCE(supplier,'') AS sup FROM ingredients ORDER BY sup", conn)
+    with c2:
+        cat = st.selectbox("Catégorie", ["(Toutes)"] + [x for x in cats["cat"].tolist() if x])
+    with c3:
+        sup = st.selectbox("Fournisseur", ["(Tous)"] + [x for x in sups["sup"].tolist() if x])
+
+    with sqlite3.connect(DB_FILE) as conn:
+        base = """
+            SELECT i.ingredient_id, i.name, i.cost_per_unit, u.abbreviation AS unit,
+                   COALESCE(i.category,'') AS category, COALESCE(i.supplier,'') AS supplier
+            FROM ingredients i
+            LEFT JOIN units u ON u.unit_id = i.unit_default
+        """
+        conds, params = [], []
+        if q:
+            conds.append("LOWER(i.name) LIKE ?")
+            params.append(f"%{q.lower()}%")
+        if cat and cat != "(Toutes)":
+            conds.append("COALESCE(i.category,'') = ?")
+            params.append(cat)
+        if sup and sup != "(Tous)":
+            conds.append("COALESCE(i.supplier,'') = ?")
+            params.append(sup)
+        if conds:
+            base += " WHERE " + " AND ".join(conds)
+        base += " ORDER BY i.name"
+
+        df = pd.read_sql_query(base, conn, params=params)
+
+    st.subheader("Liste")
+    if df.empty:
+        st.info("Aucun ingrédient trouvé.")
+    else:
+        grid = df.rename(columns={
+            "name": "Ingrédient",
+            "cost_per_unit": "Coût / unité",
+            "unit": "Unité par défaut",
+            "category": "Catégorie",
+            "supplier": "Fournisseur",
+        })[["Ingrédient", "Unité par défaut", "Coût / unité", "Catégorie", "Fournisseur"]]
+        st.dataframe(grid, use_container_width=True)
+
+    st.divider()
+
+    # --- Formulaire créer / mettre à jour ---
+    st.subheader("Créer / mettre à jour un ingrédient")
+
+    # Précharger unités disponibles
+    with sqlite3.connect(DB_FILE) as conn:
+        unit_choices = [r[0] for r in conn.execute("SELECT abbreviation FROM units ORDER BY abbreviation").fetchall()]
+        ing_names = [r[0] for r in conn.execute("SELECT name FROM ingredients ORDER BY name").fetchall()]
+
+    mode = st.radio("Mode :", ["Créer", "Mettre à jour"], horizontal=True)
+
+    if mode == "Mettre à jour" and ing_names:
+        sel = st.selectbox("Choisir l’ingrédient à modifier", ing_names)
+        with sqlite3.connect(DB_FILE) as conn:
+            r = conn.execute("""
+                SELECT i.name, i.cost_per_unit, u.abbreviation AS unit, i.category, i.supplier
+                FROM ingredients i
+                LEFT JOIN units u ON u.unit_id = i.unit_default
+                WHERE i.name=?
+            """, (sel,)).fetchone()
+        pre_name, pre_cost, pre_unit, pre_cat, pre_sup = r if r else (sel, None, "", "", "")
+    else:
+        sel = None
+        pre_name, pre_cost, pre_unit, pre_cat, pre_sup = "", None, "", "", ""
+
+    colA, colB = st.columns([2, 1])
+    with colA:
+        name = st.text_input("Nom de l’ingrédient", value=pre_name)
+        category = st.text_input("Catégorie", value=pre_cat or "")
+        supplier = st.text_input("Fournisseur", value=pre_sup or "")
+    with colB:
+        unit = st.selectbox("Unité par défaut", options=[""] + unit_choices,
+                            index=(unit_choices.index(pre_unit) + 1) if pre_unit in unit_choices else 0)
+        cpu = st.number_input("Coût par unité", min_value=0.0, value=float(pre_cost) if pre_cost else 0.0,
+                              step=0.01, format="%.4f")
+
+    if mode == "Créer":
+        if st.button("➕ Créer l’ingrédient", type="primary"):
+            n = clean_text(name)
+            if not n:
+                st.error("Le nom est obligatoire.")
+            else:
+                try:
+                    with sqlite3.connect(DB_FILE) as conn:
+                        uid = unit_id_by_abbr(conn, unit) if unit else None
+                        conn.execute("""
+                            INSERT INTO ingredients(name, unit_default, cost_per_unit, supplier, category)
+                            VALUES (?,?,?,?,?)
+                        """, (n, uid, cpu if cpu > 0 else None, clean_text(supplier) or None, clean_text(category) or None))
+                        conn.commit()
+                    st.success(f"Ingrédient '{n}' créé.")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Un ingrédient avec ce nom existe déjà.")
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+    else:
+        if st.button("💾 Mettre à jour", type="primary", disabled=not sel):
+            n = clean_text(name)
+            if not n:
+                st.error("Le nom est obligatoire.")
+            else:
+                try:
+                    with sqlite3.connect(DB_FILE) as conn:
+                        uid = unit_id_by_abbr(conn, unit) if unit else None
+                        conn.execute("""
+                            UPDATE ingredients
+                            SET name=?, unit_default=?, cost_per_unit=?, supplier=?, category=?
+                            WHERE name=?
+                        """, (n, uid, cpu if cpu > 0 else None,
+                              clean_text(supplier) or None, clean_text(category) or None, sel))
+                        conn.commit()
+                    st.success(f"Ingrédient '{n}' mis à jour.")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Conflit : un autre ingrédient porte déjà ce nom.")
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
+def show_create_recipe():
+    st.header("🆕 Créer une recette")
+
+    # Unités pour listes déroulantes
+    with sqlite3.connect(DB_FILE) as conn:
+        unit_choices = [r[0] for r in conn.execute("SELECT abbreviation FROM units ORDER BY abbreviation").fetchall()]
+
+    # --- Métadonnées ---
+    st.subheader("Informations")
+    colA, colB, colC = st.columns([2, 1, 1])
+    with colA:
+        r_name = st.text_input("Nom de la recette")
+        r_type = st.text_input("Type de recette (catégorie)")
+    with colB:
+        r_yield_qty = st.number_input("Rendement - quantité", min_value=0.0, value=0.0, step=0.1, format="%.3f")
+        r_yield_unit = st.selectbox("Rendement - unité", options=[""] + unit_choices)
+    with colC:
+        r_sell_price = st.number_input("Prix de vente (optionnel)", min_value=0.0, value=0.0, step=0.1, format="%.2f")
+
+    st.subheader("Ingrédients (ajoute/supprime des lignes)")
+    ing_df = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité"])
+    ing_editor = st.data_editor(
+        ing_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Ingrédient": st.column_config.TextColumn(help="Nom exact (créé si nouveau)"),
+            "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01),
+            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices),
+        },
+        key="create_ing_editor",
+    )
+
+    st.subheader("Méthode (étapes)")
+    steps_df = pd.DataFrame(columns=["Étape", "Temps (min)"])
+    steps_editor = st.data_editor(
+        steps_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Étape": st.column_config.TextColumn(width="large"),
+            "Temps (min)": st.column_config.NumberColumn(format="%.1f", step=0.5),
+        },
+        key="create_steps_editor",
+    )
+
+    st.divider()
+    if st.button("✅ Créer la recette", type="primary"):
+        n = clean_text(r_name)
+        if not n:
+            st.error("Le nom de la recette est obligatoire.")
+            return
+
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("BEGIN")
+
+                yuid = unit_id_by_abbr(conn, r_yield_unit) if r_yield_unit else None
+                conn.execute("""
+                    INSERT INTO recipes(name, type, yield_qty, yield_unit, sell_price)
+                    VALUES (?,?,?,?,?)
+                """, (n, clean_text(r_type) or None,
+                      r_yield_qty if r_yield_qty > 0 else None,
+                      yuid,
+                      r_sell_price if r_sell_price > 0 else None))
+
+                rid = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (n,)).fetchone()[0]
+
+                # Ingrédients
+                for _, r in ing_editor.iterrows():
+                    ing = clean_text(r.get("Ingrédient", ""))
+                    if not ing:
+                        continue
+                    qty = to_float_safe(r.get("Quantité"))
+                    uabbr = map_unit_text_to_abbr(r.get("Unité"))
+                    iid = find_ingredient_id(conn, ing)
+                    uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+                    conn.execute("""
+                        INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
+                        VALUES (?,?,?,?)
+                    """, (rid, iid, qty, uid))
+
+                # Étapes
+                step_no = 1
+                for _, r in steps_editor.iterrows():
+                    txt = clean_text(r.get("Étape", ""))
+                    if not txt:
+                        continue
+                    tmin = to_float_safe(r.get("Temps (min)"))
+                    conn.execute("""
+                        INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes)
+                        VALUES (?,?,?,?)
+                    """, (rid, step_no, txt, tmin))
+                    step_no += 1
+
+                conn.commit()
+
+            st.success(f"Recette '{n}' créée 🎉")
+            st.toast("Tu peux continuer à l’éditer dans 'Corriger recette'.", icon="🛠️")
+            st.rerun()
+
+        except sqlite3.IntegrityError:
+            st.error("Une recette avec ce nom existe déjà.")
+        except Exception as e:
+            st.error(f"Erreur : {e}")
 
 # =========================
 # Accueil
@@ -971,14 +1206,17 @@ def main():
     ensure_db()
     pages = {
         "Accueil": show_home,
+        "Ingrédients": show_manage_ingredients,     # ⬅️ NOUVEAU
         "Importer ingrédients": show_import_ingredients,
         "Importer recettes": show_import_recipes,
+        "Créer recette": show_create_recipe,        # ⬅️ NOUVEAU
         "Consulter recettes": show_view_recipes,
         "Corriger recette": show_edit_recipe,
         "Coût des recettes": show_recipe_costs,
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
+
 
 if __name__ == "__main__":
     main()
