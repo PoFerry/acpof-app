@@ -250,53 +250,113 @@ def show_import_ingredients():
     st.success(f"Ingrédients traités : {inserted} insérés, {updated} mis à jour.")
 
 def show_import_recipes():
-    st.header("🧑‍🍳 Importer les recettes")
-    st.caption("CSV attendu (entêtes) : recipe_name, type, yield_qty, yield_unit  "
-               "— yield_unit parmi g|kg|ml|l|pc")
+    st.header("🧑‍🍳 Importer les recettes (tolérant aux champs manquants)")
 
-    up = st.file_uploader("Téléverse ton CSV de recettes", type=["csv"])
-    if not up:
-        return
+    # --- A) Recettes (métadonnées) ---
+    st.subheader("A) Métadonnées des recettes")
+    st.caption("CSV recommandé : recipe_name, type, yield_qty, yield_unit (unit parmi g|kg|ml|l|pc). Seul recipe_name est strictement requis.")
 
-    df = pd.read_csv(up)
-    st.dataframe(df.head())
+    up_meta = st.file_uploader("Téléverse ton CSV de recettes (métadonnées)", type=["csv"], key="recipes_meta")
+    if up_meta:
+        df = pd.read_csv(up_meta)
+        st.dataframe(df.head())
 
-    required = {"recipe_name","yield_qty","yield_unit"}
-    if not required.issubset(set(map(str.lower, df.columns))):
-        st.warning("Assure-toi d’avoir au minimum: recipe_name, yield_qty, yield_unit.")
-        return
+        lc = {c.lower().strip(): c for c in df.columns}
+        if "recipe_name" not in lc:
+            st.error("Colonne 'recipe_name' obligatoire.")
+        else:
+            with sqlite3.connect(DB_FILE) as conn:
+                inserted = updated = skipped = 0
+                reasons = []
+                for _, row in df.iterrows():
+                    name = str(row[lc["recipe_name"]]).strip() if pd.notna(row[lc["recipe_name"]]) else ""
+                    if not name:
+                        skipped += 1; reasons.append("Ligne sans recipe_name")
+                        continue
+                    rtype = str(row[lc.get("type","type")]).strip() if "type" in lc and pd.notna(row[lc["type"]]) else None
+                    yqty  = to_float(row[lc["yield_qty"]], default=None) if "yield_qty" in lc else None
+                    yabbr = str(row[lc["yield_unit"]]).strip().lower() if "yield_unit" in lc and pd.notna(row[lc["yield_unit"]]) else None
+                    yuid  = unit_id_by_abbr(conn, yabbr) if yabbr else None
 
-    with sqlite3.connect(DB_FILE) as conn:
-        inserted = 0
-        updated = 0
-        for _, row in df.iterrows():
-            name = str(row.get("recipe_name","")).strip()
-            if not name:
-                continue
-            rtype = str(row.get("type","")).strip() or None
-            yqty = to_float(row.get("yield_qty"), default=None)
-            yabbr = str(row.get("yield_unit","")).strip().lower()
-            yuid = unit_id_by_abbr(conn, yabbr)
+                    exists = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (name,)).fetchone()
+                    if exists:
+                        conn.execute("""UPDATE recipes
+                                        SET type=COALESCE(?,type),
+                                            yield_qty=COALESCE(?,yield_qty),
+                                            yield_unit=COALESCE(?,yield_unit)
+                                        WHERE name=?""", (rtype, yqty, yuid, name))
+                        updated += 1
+                    else:
+                        conn.execute("INSERT INTO recipes(name, type, yield_qty, yield_unit) VALUES (?,?,?,?)",
+                                     (name, rtype, yqty, yuid))
+                        inserted += 1
+                conn.commit()
+            st.success(f"Recettes: {inserted} insérées, {updated} mises à jour, {skipped} ignorées.")
+            if reasons:
+                with st.expander("Pourquoi certaines lignes ont été ignorées ?"):
+                    st.write("\n".join(reasons))
 
-            exists = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (name,)).fetchone()
-            if exists:
-                conn.execute("""
-                    UPDATE recipes
-                    SET type = COALESCE(?, type),
-                        yield_qty = COALESCE(?, yield_qty),
-                        yield_unit = COALESCE(?, yield_unit)
-                    WHERE name = ?
-                """, (rtype, yqty, yuid, name))
-                updated += 1
-            else:
-                conn.execute("""
-                    INSERT INTO recipes(name, type, yield_qty, yield_unit)
-                    VALUES (?,?,?,?)
-                """, (name, rtype, yqty, yuid))
-                inserted += 1
-        conn.commit()
+    st.markdown("---")
 
-    st.success(f"Recettes traitées : {inserted} insérées, {updated} mises à jour.")
+    # --- B) Lignes recette ↔ ingrédients ---
+    st.subheader("B) Lignes recette ↔ ingrédients")
+    st.caption("CSV recommandé : recipe_name, ingredient_name, quantity, unit (unit parmi g|kg|ml|l|pc). Seuls recipe_name et ingredient_name sont strictement requis.")
+
+    up_lines = st.file_uploader("Téléverse ton CSV de lignes (ingrédients par recette)", type=["csv"], key="recipes_lines")
+    if up_lines:
+        df = pd.read_csv(up_lines)
+        st.dataframe(df.head())
+
+        lc = {c.lower().strip(): c for c in df.columns}
+        need = ["recipe_name", "ingredient_name"]
+        if not all(k in lc for k in need):
+            st.error("Colonnes requises manquantes : il faut au minimum 'recipe_name' et 'ingredient_name'.")
+            return
+
+        with sqlite3.connect(DB_FILE) as conn:
+            inserted_links = created_recipes = created_ingredients = skipped = 0
+            reasons = []
+            for _, r in df.iterrows():
+                rec_name = str(r[lc["recipe_name"]]).strip() if pd.notna(r[lc["recipe_name"]]) else ""
+                ing_name = str(r[lc["ingredient_name"]]).strip() if pd.notna(r[lc["ingredient_name"]]) else ""
+                qty = to_float(r[lc["quantity"]], default=None) if "quantity" in lc else None
+                uabbr = str(r[lc["unit"]]).strip().lower() if "unit" in lc and pd.notna(r[lc["unit"]]) else None
+                uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+
+                if not rec_name or not ing_name:
+                    skipped += 1; reasons.append("Ligne sans recipe_name ou ingredient_name")
+                    continue
+
+                # recette
+                row_rec = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
+                if row_rec:
+                    rid = row_rec[0]
+                else:
+                    conn.execute("INSERT INTO recipes(name) VALUES(?)", (rec_name,))
+                    rid = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()[0]
+                    created_recipes += 1
+
+                # ingrédient
+                row_ing = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                if row_ing:
+                    iid = row_ing[0]
+                else:
+                    conn.execute("INSERT INTO ingredients(name) VALUES(?)", (ing_name,))
+                    iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()[0]
+                    created_ingredients += 1
+
+                conn.execute("""INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
+                                VALUES (?,?,?,?)""", (rid, iid, qty, uid))
+                inserted_links += 1
+
+            conn.commit()
+
+        st.success(f"Lignes importées : {inserted_links}. Nouvelles recettes : {created_recipes}. Nouveaux ingrédients : {created_ingredients}. Ignorées : {skipped}.")
+        if reasons:
+            with st.expander("Détails des lignes ignorées"):
+                st.write("\n".join(reasons))
+        st.info("Va maintenant dans **Coût recette** pour voir le calcul (conversions kg↔g, L↔mL).")
+
 
 def show_ingredients():
     st.header("📋 Liste des ingrédients")
@@ -391,6 +451,97 @@ def show_recipe_costs():
     st.metric("Coût total (lot)", f"{total:.2f} $" if pd.notna(total) else "—")
 
     st.caption("Conversions utilisées : kg↔g (×/÷1000), L↔mL (×/÷1000). Aucune conversion automatique avec 'pc'.")
+def show_fix_recipes():
+    st.header("🛠️ Corriger / compléter les recettes")
+
+    with sqlite3.connect(DB_FILE) as conn:
+        recs = pd.read_sql_query("SELECT recipe_id, name FROM recipes ORDER BY name", conn)
+
+    if recs.empty:
+        st.info("Aucune recette dans la base. Importe d'abord des recettes.")
+        return
+
+    choice = st.selectbox("Choisir une recette :", recs["name"])
+    rid = recs.loc[recs["name"] == choice, "recipe_id"].iloc[0]
+
+    with sqlite3.connect(DB_FILE) as conn:
+        # métadonnées
+        meta = conn.execute("SELECT name, type, yield_qty, yield_unit FROM recipes WHERE recipe_id=?", (rid,)).fetchone()
+        units = pd.read_sql_query("SELECT unit_id, abbreviation FROM units ORDER BY abbreviation", conn)
+
+    st.subheader("Métadonnées")
+    name = st.text_input("Nom de la recette", value=meta[0] or "")
+    rtype = st.text_input("Type", value=meta[1] or "")
+    yqty = st.number_input("Rendement (quantité)", value=float(meta[2]) if meta[2] is not None else 0.0, min_value=0.0, step=0.1, format="%.3f")
+    unit_map = dict(units.values)  # id -> abbr
+    rev_unit_map = {v:k for k,v in unit_map.items()}
+    yunit_abbr = unit_map.get(meta[3], None)
+    yunit = st.selectbox("Unité de rendement", [""] + list(rev_unit_map.keys()), index=([""] + list(rev_unit_map.keys())).index(yunit_abbr or "") if yunit_abbr else 0)
+
+    # ingrédients de la recette
+    with sqlite3.connect(DB_FILE) as conn:
+        df = pd.read_sql_query("""
+            SELECT ri.recipe_ingredient_id, i.name AS ingredient, ri.quantity, u.abbreviation AS unit
+            FROM recipe_ingredients ri
+            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
+            LEFT JOIN units u ON u.unit_id = ri.unit
+            WHERE ri.recipe_id = ?
+            ORDER BY ri.recipe_ingredient_id
+        """, conn, params=(rid,))
+
+    st.subheader("Ingrédients de la recette")
+    edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="edit_lines",
+                            column_config={
+                                "recipe_ingredient_id": st.column_config.Column(disabled=True),
+                                "ingredient": st.column_config.TextColumn(help="Nom exact de l’ingrédient existant (ou nouveau)"),
+                                "quantity": st.column_config.NumberColumn(format="%.3f"),
+                                "unit": st.column_config.TextColumn(help="g, kg, ml, l, pc")
+                            })
+
+    if st.button("💾 Enregistrer les modifications"):
+        with sqlite3.connect(DB_FILE) as conn:
+            # maj meta
+            yunit_id = rev_unit_map.get(yunit) if yunit else None
+            conn.execute("UPDATE recipes SET name=?, type=?, yield_qty=?, yield_unit=? WHERE recipe_id=?",
+                         (name.strip() or None, rtype.strip() or None, yqty if yqty>0 else None, yunit_id, rid))
+
+            # synchroniser les lignes
+            # 1) supprimer celles qui n'existent plus
+            current_ids = set([int(x) for x in edited["recipe_ingredient_id"].dropna().tolist()])
+            existing_ids = set([r[0] for r in conn.execute("SELECT recipe_ingredient_id FROM recipe_ingredients WHERE recipe_id=?", (rid,)).fetchall()])
+            to_delete = existing_ids - current_ids
+            for _id in to_delete:
+                conn.execute("DELETE FROM recipe_ingredients WHERE recipe_ingredient_id=?", (int(_id),))
+
+            # 2) upsert chaque ligne
+            for _, r in edited.iterrows():
+                ing_name = str(r.get("ingredient") or "").strip()
+                qty = to_float(r.get("quantity"), default=None)
+                uabbr = str(r.get("unit") or "").strip().lower()
+                uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+
+                if not ing_name:
+                    continue
+
+                row_ing = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                if row_ing:
+                    iid = row_ing[0]
+                else:
+                    conn.execute("INSERT INTO ingredients(name) VALUES(?)", (ing_name,))
+                    iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()[0]
+
+                if pd.notna(r.get("recipe_ingredient_id")):
+                    # update
+                    conn.execute("""UPDATE recipe_ingredients
+                                    SET ingredient_id=?, quantity=?, unit=?
+                                    WHERE recipe_ingredient_id=?""", (iid, qty, uid, int(r["recipe_ingredient_id"])))
+                else:
+                    # insert
+                    conn.execute("""INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
+                                    VALUES (?,?,?,?)""", (rid, iid, qty, uid))
+            conn.commit()
+
+        st.success("Modifications enregistrées ✅")
 
 # ---------------------------
 # MAIN
@@ -399,7 +550,15 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Aller à :",
-        ["Accueil", "Importer ingrédients", "Importer recettes", "Liste des ingrédients", "Liste des recettes", "Coût recette"],
+        [
+            "Accueil",
+            "Importer ingrédients",
+            "Importer recettes",
+            "Corriger recettes",          # <-- ajoute ceci
+            "Liste des ingrédients",
+            "Liste des recettes",
+            "Coût recette",
+        ],
     )
 
     init_db()
@@ -410,12 +569,11 @@ def main():
         show_import_ingredients()
     elif page == "Importer recettes":
         show_import_recipes()
+    elif page == "Corriger recettes":       # <-- et ceci
+        show_fix_recipes()
     elif page == "Liste des ingrédients":
         show_ingredients()
     elif page == "Liste des recettes":
         show_recipes()
     elif page == "Coût recette":
         show_recipe_costs()
-
-if __name__ == "__main__":
-    main()
