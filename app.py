@@ -251,31 +251,52 @@ def show_import_ingredients():
     st.success(f"Ingrédients traités : {inserted} insérés, {updated} mis à jour.")
 
 def show_import_recipes():
-    st.header("🧑‍🍳 Importer les recettes (entêtes FR OU positions de colonnes)")
+    st.header("🧑‍🍳 Importer les recettes (entêtes FR OU positions fixes)")
 
     st.caption("""
-    Deux modes d'import sont pris en charge :
-    1) Entêtes FR (Titre de la recette, Type de recette, Ingrédient 1/Format/Quantité, Étape 1/Temps, etc.)
-    2) Positions fixes (comme ton fichier) :
-       - Ingrédient 1 = I (nom), J (unité), K (quantité), puis toutes les 3 colonnes jusqu'à avant CG
-       - Étapes = CG (étape 1), CH (temps 1), CI (étape 2), CJ (temps 2), ... jusqu'à CZ
-    Les champs manquants (#VALUE!, vide) sont ignorés proprement.
+    Choisis le mode :
+    - **Entêtes FR** : colonnes nommées "Ingrédient 1", "Format ingrédient 1", "Quantité ingrédient 1", "Étape 1", "Temps étape 1", etc.
+    - **Positions fixes** : triplets (Nom, Unité, Quantité) à partir d'une colonne, par défaut I/J/K, puis toutes les 3 colonnes jusqu'à avant la colonne de début des étapes.
+      Étapes = paires (Instruction, Temps) à partir d'une colonne, par défaut CG/CH, puis toutes les 2 colonnes jusqu'à CZ.
     """)
 
-    up = st.file_uploader("Téléverser le CSV des recettes", type=["csv"])
+    mode = st.radio("Mode d’import :", ["Entêtes FR", "Positions fixes"], horizontal=True)
+
+    # Paramètres pour positions fixes (personnalisables)
+    def col_index(col_letters: str) -> int:
+        col_letters = str(col_letters).strip().upper()
+        if not col_letters:
+            return 0
+        n = 0
+        for ch in col_letters:
+            if not ('A' <= ch <= 'Z'):
+                return 0
+            n = n * 26 + (ord(ch) - ord('A') + 1)
+        return n - 1  # 0-based
+
+    if mode == "Positions fixes":
+        col_ing_start_str = st.text_input("Colonne du **premier ingrédient - Nom** (ex: I)", value="I")
+        col_step_start_str = st.text_input("Colonne de **la première étape** (ex: CG)", value="CG")
+        col_step_end_str = st.text_input("Colonne **fin des étapes** (ex: CZ)", value="CZ")
+        ING_START = col_index(col_ing_start_str)
+        STEPS_START = col_index(col_step_start_str)
+        STEPS_END = col_index(col_step_end_str)
+
+    up = st.file_uploader("Téléverser le **CSV des recettes**", type=["csv"])
     if not up:
         return
 
-    # ---- Lecture CSV souple
+    # Lecture souple du CSV (séparateur auto)
     try:
         df = pd.read_csv(up, sep=None, engine="python", dtype=str).fillna("")
     except Exception:
         df = pd.read_csv(up, dtype=str).fillna("")
 
-    st.subheader("Aperçu")
-    st.dataframe(df.head())
+    st.subheader("Aperçu du fichier")
+    st.dataframe(df.head(), use_container_width=True)
+    st.caption(f"{df.shape[0]} lignes, {df.shape[1]} colonnes.")
 
-    # ---- Utilitaires
+    # Utils
     def norm_col(c):
         return " ".join(str(c).strip().lower().split())
 
@@ -302,65 +323,55 @@ def show_import_recipes():
         }
         return aliases.get(s, s)
 
-    # Conversion "lettre(s) de colonne" -> index 0-based
-    def col_index(col_letters: str) -> int:
-        col_letters = col_letters.strip().upper()
-        n = 0
-        for ch in col_letters:
-            n = n * 26 + (ord(ch) - ord('A') + 1)
-        return n - 1  # 0-based
-
-    # Indices fixes selon ton plan
-    ING_START = col_index("I")    # 8
-    STEPS_START = col_index("CG") # 84
-    STEPS_END = col_index("CZ")   # 103 (inclus)
-    # pattern ingrédients: (nom, unité, quantité) par triplet -> I,J,K … jusqu’à avant CG
-    # pattern étapes: pairs (instruction, temps) -> CG,CH ; CI,CJ ; … jusqu’à CZ
-
-    # ---- Détection entêtes (mode 1) + fallback positions (mode 2)
-    colmap = {norm_col(c): c for c in df.columns}
-    TITLE = colmap.get("titre de la recette") or colmap.get("titre") or None
-    TYPE  = colmap.get("type de recette") or colmap.get("type") or None
-    YQTY  = colmap.get("rendement de la recette") or None
-    YUNIT = colmap.get("format rendement") or None
-
-    # si pas de titre dans les entêtes, on prendra la colonne 0 comme titre (supposition raisonnable)
-    use_header_mode = bool(TITLE)
-
-    meta_ins = meta_upd = 0
-    line_ins = new_rec = new_ing = 0
-    step_ins = 0
-    skipped_meta = 0
-    reasons_meta = []
-
+    # Prépare DB / unités
     with sqlite3.connect(DB_FILE) as conn:
-        # sécurité : unités
         conn.executemany(
             "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?,?)",
             [("gramme","g"),("kilogramme","kg"),("millilitre","ml"),("litre","l"),("pièce","pc")]
         )
         conn.commit()
 
-        # -------- 1) MÉTADONNÉES
-        for _, row in df.iterrows():
-            if use_header_mode:
-                name = str(row[TITLE]).strip() if TITLE else ""
+    # Détection entêtes (pour mode "Entêtes FR")
+    colmap = {norm_col(c): c for c in df.columns}
+    TITLE = colmap.get("titre de la recette") or colmap.get("titre") or None
+    TYPE  = colmap.get("type de recette") or colmap.get("type") or None
+    YQTY  = colmap.get("rendement de la recette") or None
+    YUNIT = colmap.get("format rendement") or None
+
+    # Si l’utilisateur a choisi "Entêtes FR" mais qu’on ne trouve pas le titre, on le signale.
+    if mode == "Entêtes FR" and not TITLE:
+        st.error("Mode 'Entêtes FR' sélectionné, mais la colonne **'Titre de la recette'** est introuvable. "
+                 "Passe en 'Positions fixes' ou renomme l’en-tête.")
+        return
+
+    meta_ins = meta_upd = 0
+    line_ins = new_rec = new_ing = 0
+    step_ins = 0
+    per_row_debug = []  # collecte debug ligne par ligne
+
+    with sqlite3.connect(DB_FILE) as conn:
+        # 1) Métadonnées
+        for idx, row in df.iterrows():
+            if mode == "Entêtes FR":
+                name = str(row[TITLE]).strip()
                 rtype = (str(row[TYPE]).strip() if TYPE else "") or None
                 yqty  = to_float_safe(row[YQTY]) if YQTY else None
                 yabbr = map_unit_text_to_abbr(row[YUNIT]) if YUNIT else None
             else:
                 cells = row.values.tolist()
-                name = str(cells[0]).strip() if len(cells) > 0 else ""  # on suppose le titre en colonne A
+                name = str(cells[0]).strip() if len(cells) > 0 else ""
                 rtype = None
                 yqty  = None
                 yabbr = None
 
             if not name:
-                skipped_meta += 1
-                reasons_meta.append("Ligne sans titre de recette")
+                per_row_debug.append((idx, 0, 0, "Sans titre → ignorée"))
                 continue
 
-            yuid  = unit_id_by_abbr(conn, yabbr) if yabbr else None
+            yuid = None
+            if yabbr:
+                r = conn.execute("SELECT unit_id FROM units WHERE LOWER(abbreviation)=?", (yabbr.lower(),)).fetchone()
+                yuid = r[0] if r else None
 
             exists = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (name,)).fetchone()
             if exists:
@@ -379,10 +390,9 @@ def show_import_recipes():
                 new_rec += 1
         conn.commit()
 
-        # -------- 2) LIGNES INGRÉDIENTS
-        for _, row in df.iterrows():
-            # identifie recette
-            if use_header_mode:
+        # 2) Ingrédients + 3) Étapes, avec debug
+        for idx, row in df.iterrows():
+            if mode == "Entêtes FR":
                 rec_name = str(row[TITLE]).strip()
             else:
                 cells = row.values.tolist()
@@ -390,38 +400,42 @@ def show_import_recipes():
 
             if not rec_name:
                 continue
+
             rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
             if not rid_row:
-                # sécurité (devrait déjà exister via métadonnées)
+                # sécurité (devrait exister après métadonnées)
                 conn.execute("INSERT INTO recipes(name) VALUES(?)", (rec_name,))
                 rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
                 new_rec += 1
             rid = rid_row[0]
 
-            if use_header_mode:
-                # mode entêtes FR (logique précédente)
+            inserted_lines = 0
+            inserted_steps = 0
+
+            if mode == "Entêtes FR":
+                # ingrédients via entêtes FR
                 for n in range(1, 36):
                     ing_key = f"ingrédient {n}"
                     fmt_key = f"format ingrédient {n}"
                     qty_key = f"quantité ingrédient {n}"
-
                     ing_col = colmap.get(ing_key)
-                    fmt_col = colmap.get(fmt_key)
-                    qty_col = colmap.get(qty_key)
                     if not ing_col:
                         continue
-
+                    fmt_col = colmap.get(fmt_key)
+                    qty_col = colmap.get(qty_key)
                     ing_name = str(row[ing_col]).strip()
-                    if ing_name == "" or ing_name.lower() == "#value!":
+                    if not ing_name or ing_name.lower() == "#value!":
                         continue
-
                     qty = to_float_safe(row[qty_col]) if qty_col else None
                     uabbr = map_unit_text_to_abbr(row[fmt_col]) if fmt_col else None
-                    uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+                    uid = None
+                    if uabbr:
+                        r = conn.execute("SELECT unit_id FROM units WHERE LOWER(abbreviation)=?", (uabbr.lower(),)).fetchone()
+                        uid = r[0] if r else None
 
-                    iid_row = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
-                    if iid_row:
-                        iid = iid_row[0]
+                    r_ing = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                    if r_ing:
+                        iid = r_ing[0]
                     else:
                         conn.execute("INSERT INTO ingredients(name) VALUES(?)", (ing_name,))
                         iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()[0]
@@ -431,11 +445,42 @@ def show_import_recipes():
                         INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
                         VALUES (?,?,?,?)
                     """, (rid, iid, qty, uid))
+                    inserted_lines += 1
                     line_ins += 1
 
+                # étapes via entêtes FR
+                # on nettoie d'abord
+                conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
+                import re
+                for n in range(1, 21):
+                    step_col = colmap.get(f"étape {n}")
+                    time_col = colmap.get(f"temps étape {n}")
+                    if not step_col:
+                        continue
+                    instruction = str(row[step_col]).strip() if row[step_col] is not None else ""
+                    if not instruction or instruction.lower() == "#value!":
+                        continue
+                    raw_time = str(row[time_col]).strip() if (time_col and row[time_col] is not None) else ""
+                    tmin = None
+                    if raw_time:
+                        m = re.findall(r"[\d]+(?:[.,]\d+)?", raw_time.replace("\u00A0",""))
+                        if m:
+                            try:
+                                tmin = float(m[0].replace(",", "."))
+                            except:
+                                tmin = None
+                    conn.execute(
+                        "INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes) VALUES (?,?,?,?)",
+                        (rid, n, instruction, tmin)
+                    )
+                    inserted_steps += 1
+                    step_ins += 1
+
             else:
-                # mode positions : triplets (nom, unité, quantité) de I.. avant CG
+                # POSITIONS FIXES
                 cells = row.values.tolist()
+
+                # ingrédients: triplets (nom, unité, qty) en partant de ING_START jusqu'à avant STEPS_START
                 last_ing_col = min(STEPS_START, len(cells))
                 c = ING_START
                 while c + 2 < last_ing_col:
@@ -443,17 +488,18 @@ def show_import_recipes():
                     unit_txt = str(cells[c+1]).strip() if c+1 < len(cells) else ""
                     qty_txt  = str(cells[c+2]).strip() if c+2 < len(cells) else ""
                     c += 3
-
                     if not ing_name or ing_name.lower() == "#value!":
                         continue
-
-                    qty  = to_float_safe(qty_txt)
+                    qty = to_float_safe(qty_txt)
                     uabbr = map_unit_text_to_abbr(unit_txt)
-                    uid  = unit_id_by_abbr(conn, uabbr) if uabbr else None
+                    uid = None
+                    if uabbr:
+                        r = conn.execute("SELECT unit_id FROM units WHERE LOWER(abbreviation)=?", (uabbr.lower(),)).fetchone()
+                        uid = r[0] if r else None
 
-                    iid_row = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
-                    if iid_row:
-                        iid = iid_row[0]
+                    r_ing = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                    if r_ing:
+                        iid = r_ing[0]
                     else:
                         conn.execute("INSERT INTO ingredients(name) VALUES(?)", (ing_name,))
                         iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()[0]
@@ -463,240 +509,52 @@ def show_import_recipes():
                         INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
                         VALUES (?,?,?,?)
                     """, (rid, iid, qty, uid))
+                    inserted_lines += 1
                     line_ins += 1
 
-        # -------- 3) ÉTAPES (Méthode) : paires (instruction, temps) de CG..CZ
-        for _, row in df.iterrows():
-            if use_header_mode:
-                rec_name = str(row[TITLE]).strip()
-            else:
-                cells = row.values.tolist()
-                rec_name = str(cells[0]).strip() if len(cells) > 0 else ""
+                # étapes: paires (instruction, temps) de STEPS_START..STEPS_END
+                conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
+                import re
+                step_no = 1
+                c = STEPS_START
+                while c <= STEPS_END and c < len(cells):
+                    instruction = str(cells[c]).strip() if c < len(cells) else ""
+                    time_txt    = str(cells[c+1]).strip() if (c+1) < len(cells) else ""
+                    c += 2
+                    if not instruction or instruction.lower() == "#value!":
+                        continue
+                    tmin = None
+                    if time_txt:
+                        m = re.findall(r"[\d]+(?:[.,]\d+)?", time_txt.replace("\u00A0",""))
+                        if m:
+                            try:
+                                tmin = float(m[0].replace(",", "."))
+                            except:
+                                tmin = None
+                    conn.execute(
+                        "INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes) VALUES (?,?,?,?)",
+                        (rid, step_no, instruction, tmin)
+                    )
+                    step_no += 1
+                    inserted_steps += 1
+                    step_ins += 1
 
-            if not rec_name:
-                continue
-            rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
-            if not rid_row:
-                continue
-            rid = rid_row[0]
-
-            # nettoyage avant réimport
-            conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
-
-            cells = row.values.tolist()
-            import re
-            step_no = 1
-            # boucle par paires (CG,CH), (CI,CJ), ... jusqu’à CZ
-            c = STEPS_START
-            while c <= STEPS_END and c < len(cells):
-                instruction = str(cells[c]).strip() if c < len(cells) else ""
-                time_txt    = str(cells[c+1]).strip() if (c+1) < len(cells) else ""
-                c += 2
-
-                if not instruction or instruction.lower() == "#value!":
-                    continue
-
-                # extrait un nombre simple en minutes si présent
-                tmin = None
-                if time_txt:
-                    m = re.findall(r"[\d]+(?:[.,]\d+)?", time_txt.replace("\u00A0",""))
-                    if m:
-                        try:
-                            tmin = float(m[0].replace(",", "."))
-                        except:
-                            tmin = None
-
-                conn.execute(
-                    "INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes) VALUES (?,?,?,?)",
-                    (rid, step_no, instruction, tmin)
-                )
-                step_no += 1
-                step_ins += 1
+            per_row_debug.append((idx, inserted_lines, inserted_steps, rec_name))
 
         conn.commit()
 
+    # Récap
     st.success(
-        f"Recettes: {meta_ins} insérées, {meta_upd} mises à jour. "
-        f"Lignes ingréd.: {line_ins}. Étapes: {step_ins}. "
-        f"Nouvelles recettes: {new_rec}. Nouveaux ingrédients: {new_ing}."
+        f"Recettes: {meta_ins} insérées, {meta_upd} mises à jour • "
+        f"Lignes ingrédients: {line_ins} • Étapes: {step_ins} • "
+        f"Nouvelles recettes: {new_rec} • Nouveaux ingrédients: {new_ing}"
     )
-    if skipped_meta:
-        with st.expander("Lignes de métadonnées ignorées"):
-            st.write("\n".join(reasons_meta))
 
-
-    def norm_col(c):
-        return " ".join(str(c).strip().lower().split())
-
-    colmap = {norm_col(c): c for c in df.columns}
-    TITLE = colmap.get("titre de la recette")
-    TYPE  = colmap.get("type de recette")
-    YQTY  = colmap.get("rendement de la recette")
-    YUNIT = colmap.get("format rendement")
-
-    if not TITLE:
-        st.error("Colonne 'Titre de la recette' introuvable.")
-        return
-
-    def to_float_safe(x):
-        if x is None: return None
-        s = str(x).strip().replace("\u00A0","")
-        if s == "" or s.lower() == "#value!": return None
-        s = s.replace(",", ".")
-        try:
-            return float(s)
-        except:
-            return None
-
-    def map_unit_text_to_abbr(u):
-        if not u: return None
-        s = str(u).strip().lower()
-        aliases = {
-            "/g":"g","g":"g","gramme":"g","grammes":"g",
-            "/kg":"kg","kg":"kg","kilogramme":"kg",
-            "/ml":"ml","ml":"ml",
-            "/l":"l","l":"l","litre":"l","litres":"l",
-            "/unité":"pc","unité":"pc","/unite":"pc","unite":"pc","pc":"pc","portion":"pc","/portion":"pc",
-        }
-        return aliases.get(s, s)
-
-    meta_ins = meta_upd = 0
-    line_ins = new_rec = new_ing = 0
-    skipped_meta = 0
-    reasons_meta = []
-
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.executemany(
-            "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?,?)",
-            [("gramme","g"),("kilogramme","kg"),("millilitre","ml"),("litre","l"),("pièce","pc")]
-        )
-        conn.commit()
-
-        # 1) métadonnées
-        for _, row in df.iterrows():
-            name = str(row[TITLE]).strip() if TITLE else ""
-            if not name:
-                skipped_meta += 1; reasons_meta.append("Ligne sans 'Titre de la recette'"); continue
-            rtype = (str(row[TYPE]).strip() if TYPE else "") or None
-            yqty  = to_float_safe(row[YQTY]) if YQTY else None
-            yabbr = map_unit_text_to_abbr(row[YUNIT]) if YUNIT else None
-            yuid  = unit_id_by_abbr(conn, yabbr) if yabbr else None
-
-            exists = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (name,)).fetchone()
-            if exists:
-                conn.execute("""
-                    UPDATE recipes
-                    SET type=COALESCE(?, type),
-                        yield_qty=COALESCE(?, yield_qty),
-                        yield_unit=COALESCE(?, yield_unit)
-                    WHERE name=?
-                """, (rtype, yqty, yuid, name))
-                meta_upd += 1
-            else:
-                conn.execute("INSERT INTO recipes(name, type, yield_qty, yield_unit) VALUES (?,?,?,?)",
-                             (name, rtype, yqty, yuid))
-                meta_ins += 1
-                new_rec += 1
-        conn.commit()
-
-        # 2) lignes ingrédient↔recette (1..35 pour être large)
-        for _, row in df.iterrows():
-            rec_name = str(row[TITLE]).strip() if TITLE else ""
-            if not rec_name:
-                continue
-            rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
-            if not rid_row:
-                conn.execute("INSERT INTO recipes(name) VALUES(?)", (rec_name,))
-                rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
-                new_rec += 1
-            rid = rid_row[0]
-
-            for n in range(1, 36):
-                ing_key = f"ingrédient {n}"
-                fmt_key = f"format ingrédient {n}"
-                qty_key = f"quantité ingrédient {n}"
-
-                ing_col = colmap.get(ing_key)
-                fmt_col = colmap.get(fmt_key)
-                qty_col = colmap.get(qty_key)
-
-                if not ing_col:
-                    continue
-
-                ing_name = str(row[ing_col]).strip()
-                if ing_name == "" or ing_name.lower() == "#value!":
-                    continue
-
-                qty = to_float_safe(row[qty_col]) if qty_col else None
-                uabbr = map_unit_text_to_abbr(row[fmt_col]) if fmt_col else None
-                uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
-
-                iid_row = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
-                if iid_row:
-                    iid = iid_row[0]
-                else:
-                    conn.execute("INSERT INTO ingredients(name) VALUES(?)", (ing_name,))
-                    iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()[0]
-                    new_ing += 1
-
-                conn.execute("""
-                    INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit)
-                    VALUES (?,?,?,?)
-                """, (rid, iid, qty, uid))
-                line_ins += 1
-
-        # 3) Étapes (Méthode) : colonnes "Étape n" + "Temps étape n"
-        # on nettoie et importe si présent
-        for _, row in df.iterrows():
-            rec_name = str(row[TITLE]).strip() if TITLE else ""
-            if not rec_name:
-                continue
-            rid_row = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (rec_name,)).fetchone()
-            if not rid_row:
-                continue
-            rid = rid_row[0]
-
-            # supprime les anciennes étapes pour une réimport propre
-            conn.execute("DELETE FROM recipe_steps WHERE recipe_id=?", (rid,))
-
-            # reconstitue un colmap local sûr
-            cm = { " ".join(str(c).strip().lower().split()): c for c in df.columns }
-
-            import re
-            for n in range(1, 21):
-                step_key = f"étape {n}"
-                time_key = f"temps étape {n}"
-                step_col = cm.get(step_key)
-                time_col = cm.get(time_key)
-
-                if not step_col:
-                    continue
-
-                instruction = str(row[step_col]).strip() if row[step_col] is not None else ""
-                if not instruction or instruction.lower() == "#value!":
-                    continue
-
-                raw_time = str(row[time_col]).strip() if time_col and row[time_col] is not None else ""
-                tmatch = re.findall(r"[\d]+(?:[.,]\d+)?", raw_time.replace("\u00A0",""))
-                tmin = None
-                if tmatch:
-                    try:
-                        tmin = float(tmatch[0].replace(",", "."))
-                    except:
-                        tmin = None
-
-                conn.execute(
-                    "INSERT INTO recipe_steps(recipe_id, step_no, instruction, time_minutes) VALUES (?,?,?,?)",
-                    (rid, n, instruction, tmin)
-                )
-
-        conn.commit()
-
-    st.success(f"Recettes: {meta_ins} insérées, {meta_upd} mises à jour. Lignes: {line_ins}. Nouvelles recettes: {new_rec}. Nouveaux ingrédients: {new_ing}.")
-
-    if skipped_meta:
-        with st.expander("Lignes de métadonnées ignorées"):
-            st.write("\n".join(reasons_meta))
+    # Debug détaillé par ligne
+    with st.expander("🔎 Détails par ligne importée"):
+        dbg = pd.DataFrame(per_row_debug, columns=["index_ligne_csv", "ingrédients_insérés", "étapes_insérées", "recette"])
+        st.dataframe(dbg, use_container_width=True)
+        st.caption("Si 'ingrédients_insérés' = 0 pour toutes les lignes, vérifie le bon mode et les colonnes de départ (I, CG...).")
 
 def show_fix_recipes():
     st.header("🛠️ Corriger / compléter les recettes")
