@@ -584,6 +584,118 @@ def show_recipe_costs():
     else:
         st.metric("Coût total (lot)", "—")
     st.caption("Conversions : kg↔g et L↔mL. Aucune conversion automatique avec 'pc'.")
+def show_view_recipes():
+    st.header("📖 Consulter les recettes")
+
+    # — Recherche & filtres —
+    col1, col2, col3 = st.columns([2,1,1])
+    with col1:
+        q = st.text_input("Recherche (nom contient…)", "")
+    with sqlite3.connect(DB_FILE) as conn:
+        types_df = pd.read_sql_query("SELECT DISTINCT COALESCE(type, '') AS type FROM recipes ORDER BY type", conn)
+    with col2:
+        type_filter = st.multiselect("Type", [t for t in types_df["type"].tolist() if t])
+    with col3:
+        sort_by = st.selectbox("Trier par", ["Nom", "Type", "Rendement"])
+
+    # — Liste des recettes (selon filtres) —
+    with sqlite3.connect(DB_FILE) as conn:
+        base = """
+            SELECT r.recipe_id, r.name, COALESCE(r.type,'') AS type,
+                   r.yield_qty, u.abbreviation AS yield_unit
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+        """
+        conds, params = [], []
+        if q:
+            conds.append("LOWER(r.name) LIKE ?")
+            params.append(f"%{q.lower()}%")
+        if type_filter:
+            conds.append("COALESCE(r.type,'') IN (%s)" % ",".join("?"*len(type_filter)))
+            params.extend(type_filter)
+        if conds:
+            base += " WHERE " + " AND ".join(conds)
+
+        if sort_by == "Nom":
+            base += " ORDER BY r.name"
+        elif sort_by == "Type":
+            base += " ORDER BY r.type, r.name"
+        else:  # Rendement
+            base += " ORDER BY r.yield_qty DESC NULLS LAST, r.name"
+
+        recipes = pd.read_sql_query(base, conn, params=params)
+
+    if recipes.empty:
+        st.info("Aucune recette trouvée avec ces critères.")
+        return
+
+    # — Sélection d’une recette —
+    choice = st.selectbox("Sélectionne une recette :", recipes["name"])
+    rid = recipes.loc[recipes["name"] == choice, "recipe_id"].iloc[0]
+
+    # — Métadonnées recette —
+    rrow = recipes[recipes["recipe_id"] == rid].iloc[0]
+    st.subheader("Informations")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Nom", rrow["name"])
+    c2.metric("Type", rrow["type"] or "—")
+    c3.metric("Rendement", f"{rrow['yield_qty']:.3f} {rrow['yield_unit']}" if pd.notna(rrow["yield_qty"]) and rrow["yield_unit"] else "—")
+
+    # — Détail ingrédients + coûts —
+    with sqlite3.connect(DB_FILE) as conn:
+        df = pd.read_sql_query("""
+            SELECT i.name AS ingredient,
+                   ri.quantity AS qty,
+                   u.abbreviation AS unit,
+                   i.cost_per_unit,
+                   iu.abbreviation AS ing_unit
+            FROM recipe_ingredients ri
+            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
+            LEFT JOIN units u  ON u.unit_id  = ri.unit
+            LEFT JOIN units iu ON iu.unit_id = i.unit_default
+            WHERE ri.recipe_id = ?
+            ORDER BY i.name
+        """, conn, params=(rid,))
+
+    def convert(qty, unit, ing_unit):
+        if pd.isna(qty) or qty is None:
+            return None
+        unit = (unit or "").lower()
+        ing_unit = (ing_unit or "").lower()
+        if unit == ing_unit: return qty
+        if unit == "kg" and ing_unit == "g":  return qty * 1000.0
+        if unit == "g"  and ing_unit == "kg": return qty / 1000.0
+        if unit == "l"  and ing_unit == "ml": return qty * 1000.0
+        if unit == "ml" and ing_unit == "l":  return qty / 1000.0
+        return None
+
+    if df.empty:
+        st.info("Cette recette n’a pas encore d’ingrédients liés.")
+    else:
+        df["qty_in_ing_unit"] = df.apply(lambda r: convert(r["qty"], r["unit"], r["ing_unit"]), axis=1)
+
+        def line_cost(row):
+            q, c = row["qty_in_ing_unit"], row["cost_per_unit"]
+            if pd.isna(q) or pd.isna(c): return None
+            try: return float(q) * float(c)
+            except: return None
+
+        df["line_cost"] = df.apply(line_cost, axis=1)
+
+        st.subheader("Ingrédients")
+        st.dataframe(
+            df[["ingredient","qty","unit","qty_in_ing_unit","ing_unit","cost_per_unit","line_cost"]],
+            use_container_width=True
+        )
+
+        total = df["line_cost"].sum(skipna=True)
+        st.metric("💰 Coût total (lot)", f"{total:.2f} $" if pd.notna(total) else "—")
+
+        # — Export CSV —
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Exporter les ingrédients de la recette (CSV)", data=csv, file_name=f"{rrow['name']}_ingredients.csv", mime="text/csv")
+
+    st.caption("Conversions : kg↔g et L↔mL. Pas de conversion automatique avec 'pc'.")
 
 # ================================
 # Main
@@ -597,6 +709,7 @@ def main():
             "Importer ingrédients",
             "Importer recettes",
             "Corriger recettes",
+            "Consulter recettes",       # <-- ajouté
             "Liste des ingrédients",
             "Liste des recettes",
             "Coût recette",
@@ -613,12 +726,11 @@ def main():
         show_import_recipes()
     elif page == "Corriger recettes":
         show_fix_recipes()
+    elif page == "Consulter recettes":       # <-- ajouté
+        show_view_recipes()
     elif page == "Liste des ingrédients":
         show_ingredients()
     elif page == "Liste des recettes":
         show_recipes()
     elif page == "Coût recette":
         show_recipe_costs()
-
-if __name__ == "__main__":
-    main()
