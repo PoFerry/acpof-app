@@ -1,0 +1,7 @@
+recipe_name,type,yield_qty,yield_unit
+Pâte à pizza,boulangerie,10,pc
+ingredient_name,qty,unit
+Farine,1500,g
+Eau,900,ml
+Sel,20,g
+Levure,5,g
