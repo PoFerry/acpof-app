@@ -82,7 +82,8 @@ def ensure_db():
             unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             abbreviation TEXT UNIQUE
-        )""")
+        )
+        """)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS ingredients(
             ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,8 +93,9 @@ def ensure_db():
             supplier TEXT,
             category TEXT,
             FOREIGN KEY(unit_default) REFERENCES units(unit_id)
-        )""")
-       conn.execute("""
+        )
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
@@ -104,9 +106,8 @@ def ensure_db():
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )
         """)
+        conn.commit()
 
-        if not pd.isna(line_cost):
-            total += line_cost
 
     return (total if total is not None else None), issues
 
