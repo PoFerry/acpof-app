@@ -113,13 +113,13 @@ def ensure_db():
 def show_import_ingredients():
     st.header("📦 Importer les ingrédients (CSV)")
 
-    st.caption("""
-    CSV attendu (flexible) - colonnes utiles reconnues :
-    - **Description de produit** (nom ingrédient)
-    - **UDM d'inventaire** (g, kg, ml, l, unité…)
-    - **Prix pour recette** ou **Prix unitaire produit** (coût par unité de l’UDM)
-    - (optionnel) **Nom Fournisseur**, **Catégorie**
-    """)
+   st.caption("""
+CSV attendu (flexible) - colonnes utiles reconnues :
+- **Description de produit** (nom ingrédient)
+- **UDM d'inventaire** (g, kg, ml, l, unité…)
+- **Prix pour recette** ou **Prix unitaire produit** (coût par unité de l’UDM)
+- (optionnel) **Nom Fournisseur**, **Catégorie**
+""")
 
     up = st.file_uploader("Téléverser le CSV d’ingrédients", type=["csv"])
     if not up:
