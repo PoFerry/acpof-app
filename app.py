@@ -1,9 +1,4 @@
-diff --git a/app.py b/app.py
-index 4c75e82006f36506e15813996509df6fa3b4b466..c0636fff1eb71fa39e2831be69b8ed03639f42c5 100644
---- a/app.py
-+++ b/app.py
-@@ -1,124 +1,180 @@
- # app.py
+# app.py
  import sqlite3
  import re
 -import io
@@ -349,3 +344,6 @@ index 4c75e82006f36506e15813996509df6fa3b4b466..c0636fff1eb71fa39e2831be69b8ed03
                  conn.execute("""
                      UPDATE recipes
                      SET type=COALESCE(?, type),
+ 
+EOF
+)
