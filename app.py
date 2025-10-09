@@ -72,7 +72,7 @@ def app_header(title: str, subtitle: str = ""):
     with c1:
     try:
         if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width=True)
+            st.image(str(LOGO_PATH), width='stretch')
         else:
             st.caption("Logo manquant : assets/Logo_atelierPOF.png")
     except MediaFileStorageError as e:
@@ -365,7 +365,7 @@ def page_import_combined():
                 df = None
             if df is not None:
                 st.subheader("Aperçu du fichier")
-                st.dataframe(df.head(), width=True)
+                st.dataframe(df.head(), width="stretch")
                 st.caption(f"{df.shape[0]} lignes, {df.shape[1]} colonnes.")
 
                 colmap = build_column_lookup(df)
@@ -454,7 +454,7 @@ def page_import_combined():
                 df = None
             if df is not None:
                 st.subheader("Aperçu du fichier")
-                st.dataframe(df.head(), width=True)
+                st.dataframe(df.head(), width="stretch")
                 st.caption(f"{df.shape[0]} lignes, {df.shape[1]} colonnes.")
 
                 colmap = build_column_lookup(df)
@@ -660,7 +660,7 @@ def page_import_combined():
                 )
                 with st.expander("Détails par ligne importée"):
                     dbg = pd.DataFrame(per_row_debug, columns=["recette", "ingrédients_insérés", "étapes_insérées", "statut"])
-                    st.dataframe(dbg, width=True)
+                    st.dataframe(dbg, width="stretch")
 
 # ---------- PAGE 2 — Consulter recettes ----------
 def page_view_recipes():
@@ -746,7 +746,7 @@ def page_view_recipes():
             "Unité coût (base)": df["ing_unit"].fillna(""),
         })
         st.subheader("Ingrédients")
-        st.dataframe(table, width=True)
+        st.dataframe(table, "stretch")
 
     total_cost, issues = compute_recipe_cost(rid)
     st.subheader("Coût de nourriture")
@@ -855,7 +855,7 @@ def page_edit_recipe():
             "Unité": (ing_lines["unit"].fillna("").map(clean_text)),
         })
     ing_edit = st.data_editor(
-        ing_edit, num_rows="dynamic", width=True,
+        ing_edit, num_rows="dynamic", width="stretch",
         column_config={
             "Ingrédient": st.column_config.TextColumn(help="Nom exact (créé si nouveau)"),
             "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01),
@@ -874,7 +874,7 @@ def page_edit_recipe():
             "Temps (min)": steps_df["time_minutes"],
         })
     steps_edit = st.data_editor(
-        steps_edit, num_rows="dynamic", width=True,
+        steps_edit, num_rows="dynamic", width="stretch",
         column_config={
             "Étape": st.column_config.TextColumn(width="large"),
             "Temps (min)": st.column_config.NumberColumn(format="%.1f", step=0.5),
@@ -976,7 +976,7 @@ def page_recipe_costs():
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, width=True)
+    st.dataframe(df, width="stretch")
 
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Exporter CSV", data=csv, file_name="couts_recettes.csv", mime="text/csv")
@@ -1039,7 +1039,7 @@ def page_manage_ingredients():
             "Catégorie": df["category"].fillna(""),
             "Fournisseur": df["supplier"].fillna(""),
         }).sort_values("Ingrédient")
-        st.dataframe(grid, width=True)
+        st.dataframe(grid, width="stretch")
 
     st.divider()
     st.subheader("Créer / mettre à jour un ingrédient")
@@ -1134,7 +1134,7 @@ def page_create_recipe():
     st.subheader("Ingrédients (ajoute/supprime des lignes)")
     ing_df = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité"])
     ing_editor = st.data_editor(
-        ing_df, num_rows="dynamic", width=True,
+        ing_df, num_rows="dynamic", width="stretch",
         column_config={
             "Ingrédient": st.column_config.TextColumn(help="Nom exact (créé si nouveau)"),
             "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01),
@@ -1146,7 +1146,7 @@ def page_create_recipe():
     st.subheader("Méthode (étapes)")
     steps_df = pd.DataFrame(columns=["Étape", "Temps (min)"])
     steps_editor = st.data_editor(
-        steps_df, num_rows="dynamic", width=True,
+        steps_df, num_rows="dynamic", width="stretch",
         column_config={
             "Étape": st.column_config.TextColumn(width="large"),
             "Temps (min)": st.column_config.NumberColumn(format="%.1f", step=0.5),
@@ -1257,7 +1257,7 @@ def page_purchase_planner():
     plan_df = pd.DataFrame(st.session_state.purchase_plan)
     plan_df = plan_df[["name", "batches"]].rename(columns={"name": "Recette", "batches": "Lots"})
     plan_df_edit = st.data_editor(
-        plan_df, num_rows="dynamic", width=True,
+        plan_df, num_rows="dynamic", width="stretch",
         column_config={
             "Recette": st.column_config.TextColumn(disabled=True),
             "Lots": st.column_config.NumberColumn(min_value=0, step=1),
@@ -1361,7 +1361,7 @@ def page_purchase_planner():
         })
 
     out_df = pd.DataFrame(out_rows).sort_values("Ingrédient")
-    st.dataframe(out_df, width=True)
+    st.dataframe(out_df, width="stretch")
 
     c1, c2 = st.columns([1, 3])
     with c1:
