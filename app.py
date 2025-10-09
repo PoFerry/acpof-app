@@ -25,11 +25,23 @@ def to_float_safe(x) -> Optional[float]:
     s = clean_text(x)
     if s == "" or s.lower() == "#value!":
         return None
+    # Supprime tout ce qui n'est pas chiffre, point, virgule ou signe moins
+    # (retire $, €, CA$, espaces, lettres, etc.)
+    s = re.sub(r"[^\d,.\-]+", "", s)
+
+    # Cas fréquents: "17,32", "17,32$", "1 234,56", "1.234,56"
+    # Simplification: si on a à la fois ',' et '.', on suppose ',' = décimale et on retire les milliers.
+    if "," in s and "." in s:
+        # retire tous les séparateurs de milliers (points)
+        s = s.replace(".", "")
+    # remplace la virgule par un point pour le parse float
     s = s.replace(",", ".")
+
     try:
         return float(s)
     except (ValueError, TypeError):
         return None
+
 
 def map_unit_text_to_abbr(u: str) -> Optional[str]:
     s = clean_text(u).lower()
@@ -349,12 +361,14 @@ def show_import_ingredients():
 
     col_name = colmap.get("description de produit") or colmap.get("nom") or list(df.columns)[0]
     col_unit = (
-        colmap.get("udm d'inventaire")
-        or colmap.get("unité")
-        or colmap.get("unite")
-        or colmap.get("format d'inventaire")
-        or colmap.get("unité d'inventaire")
-        or colmap.get("unite d'inventaire")
+    colmap.get("udm d'inventaire")
+    or colmap.get("unité")
+    or colmap.get("unite")
+    or colmap.get("format d'inventaire")
+    or colmap.get("unité d'inventaire")
+    or colmap.get("unite d'inventaire")
+    or colmap.get("udm")
+)
     )
     col_cost = (
         colmap.get("prix pour recette")
