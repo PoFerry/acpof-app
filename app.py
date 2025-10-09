@@ -725,7 +725,7 @@ def show_view_recipes():
             "JOIN ingredients i ON i.ingredient_id = ri.ingredient_id "
             "LEFT JOIN units u  ON u.unit_id  = ri.unit "
             "LEFT JOIN units iu ON iu.unit_id = i.unit_default "
-            "WHERE ri.recipe_id = ? ORDER BY i.name",
+            "WHERE ri.recipe_id = ? ORDER BY ri.id",
             conn, params=(rid,)
         )
 
