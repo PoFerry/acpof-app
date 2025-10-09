@@ -185,6 +185,13 @@ def ensure_db():
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )""")
         conn.execute("""
+CREATE TABLE IF NOT EXISTS recipe_texts(
+    text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id INTEGER,
+    instructions TEXT,
+    FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+)
+""")
         CREATE TABLE IF NOT EXISTS recipe_lines(
             line_id INTEGER PRIMARY KEY AUTOINCREMENT,
             recipe_id INTEGER,
