@@ -215,8 +215,14 @@ CREATE TABLE IF NOT EXISTS recipe_texts(
             ],
         )
 
-        conn.commit()
-
+        conn.execute("""
+CREATE TABLE IF NOT EXISTS recipe_texts(
+    text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipe_id INTEGER,
+    instructions TEXT,
+    FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+)
+""")
         conn.commit()
 # ===============================================================
 # Partie 2 / 3 — Importation ingrédients + recettes et conversions
@@ -601,21 +607,82 @@ def page_recipe_costs():
         st.write(issues)
 
 def page_create_recipe():
-    app_header("Créer une recette", "Saisie manuelle d’une nouvelle recette")
+    app_header("Créer une recette", "Saisie complète d’une nouvelle recette")
+
     with connect() as conn:
-        units = pd.read_sql_query("SELECT * FROM units", conn)
+        units = pd.read_sql_query("SELECT abbreviation FROM units ORDER BY abbreviation", conn)
+        ingredients = pd.read_sql_query("SELECT ingredient_id, name FROM ingredients ORDER BY name", conn)
+
     name = st.text_input("Nom de la recette")
     rtype = st.text_input("Type (ex: dessert, plat principal, etc.)")
     yqty = st.number_input("Rendement (quantité totale)", min_value=0.0, value=1.0)
     yunit = st.selectbox("Unité de rendement", units["abbreviation"])
-    if st.button("Enregistrer la recette"):
+
+    st.markdown("### 🥕 Ingrédients")
+    st.caption("Ajoutez vos ingrédients, quantités et unités pour cette recette :")
+
+    ing_edit = st.data_editor(
+        pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité", "Note"]),
+        num_rows="dynamic",
+        width="stretch",
+        column_config={
+            "Ingrédient": st.column_config.TextColumn(help="Nom de l’ingrédient"),
+            "Quantité": st.column_config.TextColumn(help="Ex: 0.250"),
+            "Unité": st.column_config.SelectboxColumn(
+                options=["g", "kg", "ml", "l", "pc"], help="Abréviation UDM"
+            ),
+            "Note": st.column_config.TextColumn(help="Ex: tranché finement, cuit, etc."),
+        },
+        key="create_recipe_ing",
+    )
+
+    st.markdown("### 📋 Méthode de préparation")
+    method = st.text_area("Décrivez les étapes de préparation", height=200)
+
+    if st.button("💾 Enregistrer la recette", type="primary"):
+        if not name.strip():
+            st.error("Le nom de la recette est obligatoire.")
+            return
         with connect() as conn:
+            # Insérer la recette
             uid = conn.execute("SELECT unit_id FROM units WHERE abbreviation=?", (yunit,)).fetchone()
             uid = uid[0] if uid else None
-            conn.execute("INSERT INTO recipes(name, type, yield_qty, yield_unit) VALUES (?,?,?,?)",
-                         (name, rtype, yqty, uid))
+            conn.execute(
+                "INSERT INTO recipes(name, type, yield_qty, yield_unit) VALUES (?,?,?,?)",
+                (name.strip(), rtype.strip(), yqty, uid),
+            )
+            rid = conn.execute("SELECT recipe_id FROM recipes WHERE name=?", (name.strip(),)).fetchone()[0]
+
+            # Insérer les ingrédients
+            for _, row in ing_edit.iterrows():
+                ing_name = clean_text(row["Ingrédient"])
+                qty = to_float_safe(row["Quantité"])
+                u = map_unit_text_to_abbr(row["Unité"])
+                note = clean_text(row["Note"])
+
+                if not ing_name:
+                    continue
+
+                iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                if not iid:
+                    conn.execute("INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)", (ing_name,))
+                    iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                iid = iid[0]
+
+                conn.execute(
+                    "INSERT INTO recipe_lines(recipe_id, ingredient_id, qty, unit, note) VALUES (?,?,?,?,?)",
+                    (rid, iid, qty, u, note),
+                )
+
+            # Enregistrer la méthode
+            conn.execute(
+                "INSERT INTO recipe_texts(recipe_id, instructions) VALUES (?,?)",
+                (rid, method.strip()),
+            )
             conn.commit()
-        st.success(f"Recette '{name}' enregistrée.")
+        st.success(f"Recette '{name}' enregistrée avec succès ✅")
+        st.balloons()
+
 
 def page_view_recipes():
     app_header("Consulter les recettes", "Liste complète des recettes")
