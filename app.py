@@ -77,6 +77,7 @@ def build_column_lookup(df: pd.DataFrame) -> dict:
 
 def ensure_db():
     with sqlite3.connect(DB_FILE) as conn:
+        # 1) Table des unités
         conn.execute("""
         CREATE TABLE IF NOT EXISTS units(
             unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +86,7 @@ def ensure_db():
         )
         """)
 
+        # 2) Table des ingrédients
         conn.execute("""
         CREATE TABLE IF NOT EXISTS ingredients(
             ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +99,7 @@ def ensure_db():
         )
         """)
 
+        # 3) Table des recettes
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +112,7 @@ def ensure_db():
         )
         """)
 
+        # 4) Table de liaison recette ⇄ ingrédients
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipe_ingredients(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +126,7 @@ def ensure_db():
         )
         """)
 
+        # 5) Table des étapes de recette
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipe_steps(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,18 +138,20 @@ def ensure_db():
         )
         """)
 
+        # Données de base pour les unités
         conn.executemany(
-            "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?,?)",
+            "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?, ?)",
             [
                 ("gramme", "g"),
                 ("kilogramme", "kg"),
                 ("millilitre", "ml"),
                 ("litre", "l"),
                 ("pièce", "pc"),
-            ],
+            ]
         )
 
         conn.commit()
+
 
     return (total if total is not None else None), issues
 
