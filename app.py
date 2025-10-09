@@ -2,7 +2,16 @@
 import pandas as pd
 import re
 from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "assets" / "Logo_atelierPOF.png"
 
+
+# ... dans ui_setup() :
+if LOGO_PATH.exists():
+    st.image(str(LOGO_PATH), use_container_width=True)
+else:
+    # Optionnel : petit message en sidebar pour t’indiquer qu’il manque
+    st.sidebar.info("Ajoutez votre logo à assets/Logo_atelierPOF.png")
 # --- Configuration ---
 IN_PATH = Path("/mnt/data/ingredients_brut.csv")  # Replace with your uploaded CSV path
 OUT_PATH = Path("/mnt/data/gestion_acpof/ingredients_import.csv")
