@@ -361,15 +361,15 @@ def show_import_ingredients():
 
     col_name = colmap.get("description de produit") or colmap.get("nom") or list(df.columns)[0]
     col_unit = (
-    colmap.get("udm d'inventaire")
-    or colmap.get("unité")
-    or colmap.get("unite")
-    or colmap.get("format d'inventaire")
-    or colmap.get("unité d'inventaire")
-    or colmap.get("unite d'inventaire")
-    or colmap.get("udm")
-)
+        colmap.get("udm d'inventaire")
+        or colmap.get("unité")
+        or colmap.get("unite")
+        or colmap.get("format d'inventaire")
+        or colmap.get("unité d'inventaire")
+        or colmap.get("unite d'inventaire")
+        or colmap.get("udm")
     )
+
     col_cost = (
         colmap.get("prix pour recette")
         or colmap.get("prix unitaire produit")
