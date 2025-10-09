@@ -92,14 +92,14 @@ def ensure_db():
         # 2️⃣ Table des ingrédients
         # --------------------------------------------------
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS ingredients(
-            ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            unit_default INTEGER,
-            cost_per_unit REAL,
-            supplier TEXT,
-            category TEXT,
-            FOREIGN KEY(unit_default) REFERENCES units(unit_id)
+                conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_steps(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            step_no INTEGER,
+            instruction TEXT,
+            time_minutes REAL,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
         )
         """)
 
