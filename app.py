@@ -84,6 +84,7 @@ def ensure_db():
             abbreviation TEXT UNIQUE
         )
         """)
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS ingredients(
             ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +96,7 @@ def ensure_db():
             FOREIGN KEY(unit_default) REFERENCES units(unit_id)
         )
         """)
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,9 +108,8 @@ def ensure_db():
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )
         """)
+
         conn.commit()
-
-
     return (total if total is not None else None), issues
 
 # =========================
@@ -167,7 +168,6 @@ def show_import_ingredients():
                 conn.execute("""
                     UPDATE ingredients
                     SET unit_default=COALESCE(?, unit_default),
-@@ -334,60 +364,60 @@ def show_import_recipes():
 
     mode = st.radio("Mode d’import :", ["Entêtes FR", "Positions fixes"], horizontal=True)
 
