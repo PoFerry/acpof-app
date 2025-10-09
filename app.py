@@ -46,9 +46,6 @@ def map_unit_text_to_abbr(u: str) -> Optional[str]:
         # pièces / unités
         "pc": "pc", "/pc": "pc", "piece": "pc", "pieces": "pc",
         "unite": "pc", "/unite": "pc", "unites": "pc",
-        "unite de": "pc", "unite(s)": "pc",
-        "unite de rendement": "pc",  # cas farfelus
-        "unité": "pc",
         "portion": "pc", "/portion": "pc", "pcs": "pc", "pce": "pc", "pces": "pc",
     }
     return aliases.get(s, s)
@@ -225,6 +222,24 @@ def convert_qty(qty: float, from_u: str, to_u: str) -> Optional[float]:
     if f == "ml" and t == "l":  return qty / 1000.0
     return None
 
+def convert_unit_price(cpu: Optional[float], from_u: Optional[str], to_u: Optional[str]) -> Optional[float]:
+    """
+    Convertit un coût unitaire (cpu) exprimé 'par from_u' en coût 'par to_u'.
+    Exemple : 10 $/kg → 0.01 $/g
+    """
+    if cpu is None or pd.isna(cpu) or from_u is None or to_u is None:
+        return None
+    try:
+        cpu = float(cpu)
+    except Exception:
+        return None
+
+    # quantité de 'from_u' équivalente à 1 'to_u'
+    qty_from_for_one_to = convert_qty(1.0, to_u, from_u)
+    if qty_from_for_one_to is None:
+        return None
+    return cpu * qty_from_for_one_to
+
 def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
     """
     Calcule le coût total d'une recette (lot complet).
@@ -272,10 +287,6 @@ def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
         except Exception:
             issues.append("Coût unitaire illisible.")
             continue
-
-        # Si pas d’unité renseignée sur la ligne, on suppose l’unité par défaut de l’ingrédient
-        if not unit_r and unit_i:
-            unit_r = unit_i
 
         # Conversion vers l’unité de coût
         if unit_i and unit_r:
@@ -1027,6 +1038,14 @@ def show_recipe_costs():
 def show_manage_ingredients():
     st.header("🥫 Ingrédients — consulter et créer")
 
+    # Sélecteur d'UDM de référence pour l'affichage des prix
+    ref_unit = st.selectbox(
+        "Afficher le prix par UDM (référence) :",
+        options=["g", "kg", "ml", "l", "pc"],
+        index=0,
+        help="Convertit le coût unitaire (stocké par UDM par défaut) en prix par l’UDM choisie."
+    )
+
     # --- Filtres de recherche ---
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1:
@@ -1065,13 +1084,21 @@ def show_manage_ingredients():
     if df.empty:
         st.info("Aucun ingrédient trouvé.")
     else:
-        grid = df.rename(columns={
-            "name": "Ingrédient",
-            "cost_per_unit": "Coût / unité",
-            "unit": "Unité par défaut",
-            "category": "Catégorie",
-            "supplier": "Fournisseur",
-        })[["Ingrédient", "Unité par défaut", "Coût / unité", "Catégorie", "Fournisseur"]]
+        # Calcul du prix par UDM de référence
+        def price_per_ref(row):
+            return convert_unit_price(row["cost_per_unit"], row["unit"], ref_unit)
+
+        df["_prix_ref"] = df.apply(price_per_ref, axis=1)
+
+        grid = pd.DataFrame({
+            "Ingrédient": df["name"],
+            "Unité par défaut": df["unit"].fillna(""),
+            "Coût / unité (défaut)": df["cost_per_unit"].map(lambda x: "" if pd.isna(x) else f"{float(x):.4f}"),
+            f"Prix / {ref_unit}": df["_prix_ref"].map(lambda x: "" if x is None or pd.isna(x) else f"{float(x):.6f}"),
+            "Catégorie": df["category"].fillna(""),
+            "Fournisseur": df["supplier"].fillna(""),
+        }).sort_values("Ingrédient")
+
         st.dataframe(grid, use_container_width=True)
 
     st.divider()
