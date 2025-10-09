@@ -465,11 +465,115 @@ def page_home():
     """)
 
 def page_manage_ingredients():
-    app_header("Ingrédients", "Liste et gestion")
+    app_header("Ingrédients", "Consulter, filtrer et corriger les UDM")
+
+    # — Filtres
     with connect() as conn:
-        df = pd.read_sql_query("SELECT * FROM ingredients", conn)
-    st.dataframe(df, width="stretch")
-    st.caption(f"{len(df)} ingrédients trouvés.")
+        cats = pd.read_sql_query("SELECT DISTINCT COALESCE(category,'') AS cat FROM ingredients ORDER BY cat", conn)
+        sups = pd.read_sql_query("SELECT DISTINCT COALESCE(supplier,'') AS sup FROM ingredients ORDER BY sup", conn)
+        units_df = pd.read_sql_query("SELECT unit_id, abbreviation FROM units ORDER BY abbreviation", conn)
+
+    colf1, colf2, colf3 = st.columns([2, 2, 1])
+    with colf1:
+        q = st.text_input("Recherche (nom contient…)", "")
+    with colf2:
+        cat = st.selectbox("Catégorie", ["(Toutes)"] + [x for x in cats["cat"].tolist() if x])
+    with colf3:
+        sup = st.selectbox("Fournisseur", ["(Tous)"] + [x for x in sups["sup"].tolist() if x])
+
+    # — Lecture avec JOIN pour afficher l’abréviation de l’UDM
+    with connect() as conn:
+        base = (
+            "SELECT i.ingredient_id, i.name, i.cost_per_unit, "
+            "u.unit_id AS unit_id, u.abbreviation AS unit_abbr, "
+            "COALESCE(i.category,'') AS category, COALESCE(i.supplier,'') AS supplier "
+            "FROM ingredients i "
+            "LEFT JOIN units u ON u.unit_id = i.unit_default "
+        )
+        conds, params = [], []
+        if q:
+            conds.append("LOWER(i.name) LIKE ?"); params.append(f"%{q.lower()}%")
+        if cat and cat != "(Toutes)":
+            conds.append("COALESCE(i.category,'') = ?"); params.append(cat)
+        if sup and sup != "(Tous)":
+            conds.append("COALESCE(i.supplier,'') = ?"); params.append(sup)
+        if conds:
+            base += " WHERE " + " AND ".join(conds)
+        base += " ORDER BY i.name"
+
+        df = pd.read_sql_query(base, conn, params=params)
+
+    # — Indicateur d’ingrédients sans UDM
+    missing = int(df["unit_id"].isna().sum()) if not df.empty else 0
+    cA, cB = st.columns([1, 3])
+    with cA:
+        st.metric("UDM manquantes", missing)
+
+    st.subheader("Liste / Édition rapide")
+    if df.empty:
+        st.info("Aucun ingrédient trouvé.")
+        return
+
+    # — Prépare l’éditeur : on propose une liste déroulante d’abbréviations
+    unit_choices = units_df["abbreviation"].tolist()
+    abbr_to_id = dict(zip(units_df["abbreviation"], units_df["unit_id"]))
+    id_to_abbr = dict(zip(units_df["unit_id"], units_df["abbreviation"]))
+
+    edit_df = pd.DataFrame({
+        "ID": df["ingredient_id"],
+        "Ingrédient": df["name"],
+        "Unité par défaut": df["unit_abbr"].map(lambda x: "" if pd.isna(x) else x),
+        "Coût / unité": df["cost_per_unit"].map(lambda x: "" if pd.isna(x) else f"{float(x):.4f}"),
+        "Catégorie": df["category"],
+        "Fournisseur": df["supplier"],
+    })
+
+    edit_df = st.data_editor(
+        edit_df,
+        width="stretch",
+        num_rows="dynamic",
+        column_config={
+            "ID": st.column_config.TextColumn(disabled=True),
+            "Ingrédient": st.column_config.TextColumn(help="Nom de l’ingrédient"),
+            "Unité par défaut": st.column_config.SelectboxColumn(
+                options=[""] + unit_choices,
+                help="Abréviation UDM (g, kg, ml, l, pc)"
+            ),
+            "Coût / unité": st.column_config.TextColumn(help="Ex: 0.0125"),
+            "Catégorie": st.column_config.TextColumn(),
+            "Fournisseur": st.column_config.TextColumn(),
+        },
+        key="ingredients_editor",
+    )
+
+    st.caption("Astuce : corrige les UDM manquantes via la colonne 'Unité par défaut', puis Enregistrer.")
+
+    save = st.button("💾 Enregistrer les modifications", type="primary")
+    if save:
+        try:
+            with connect() as conn:
+                conn.execute("BEGIN")
+                for _, r in edit_df.iterrows():
+                    ing_id = int(r["ID"])
+                    new_name = clean_text(r["Ingrédient"])
+                    new_cat = clean_text(r["Catégorie"]) or None
+                    new_sup = clean_text(r["Fournisseur"]) or None
+                    # coût : accepte vide
+                    new_cpu = to_float_safe(r["Coût / unité"])
+                    # UDM : map abréviation -> unit_id (ou None si vide)
+                    abbr = clean_text(r["Unité par défaut"])
+                    new_uid = abbr_to_id.get(abbr) if abbr else None
+
+                    conn.execute(
+                        "UPDATE ingredients SET name=?, unit_default=?, cost_per_unit=?, category=?, supplier=? WHERE ingredient_id=?",
+                        (new_name, new_uid, new_cpu, new_cat, new_sup, ing_id)
+                    )
+                conn.commit()
+            st.success("Modifications enregistrées ✅")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erreur pendant l’enregistrement : {e}")
+
 
 def page_recipe_costs():
     app_header("Coût des recettes", "Estimation automatique du coût de revient")
