@@ -751,7 +751,7 @@ def show_view_recipes():
             "Quantité (recette)": df.apply(qty_label, axis=1),
             "Coût / unité (base)": df["cost_per_unit"].map(lambda x: "" if pd.isna(x) else f"{float(x):.4f}"),
             "Unité coût (base)": df["ing_unit"].fillna(""),
-        }).sort_values("Ingrédient")
+        })
 
         st.subheader("Ingrédients")
         st.dataframe(table, use_container_width=True)
