@@ -184,6 +184,19 @@ def ensure_db():
             sell_price REAL,
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )""")
+# --- Initialisation des unités par défaut ---
+conn.executemany(
+    "INSERT OR IGNORE INTO units(name, abbreviation) VALUES (?,?)",
+    [
+        ("gramme", "g"),
+        ("kilogramme", "kg"),
+        ("millilitre", "ml"),
+        ("litre", "l"),
+        ("pièce", "pc"),
+    ],
+)
+
+        
         conn.commit()
 # ===============================================================
 # Partie 2 / 3 — Importation ingrédients + recettes et conversions
