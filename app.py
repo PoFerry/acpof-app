@@ -77,6 +77,7 @@ def build_column_lookup(df: pd.DataFrame) -> dict:
 
 def ensure_db():
     with sqlite3.connect(DB_FILE) as conn:
+        # Table des unités
         conn.execute("""
         CREATE TABLE IF NOT EXISTS units(
             unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +86,7 @@ def ensure_db():
         )
         """)
 
+        # Table des ingrédients
         conn.execute("""
         CREATE TABLE IF NOT EXISTS ingredients(
             ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +99,7 @@ def ensure_db():
         )
         """)
 
+        # Table des recettes
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +112,46 @@ def ensure_db():
         )
         """)
 
+        # Table de liaison recettes / ingrédients
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_ingredients(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            ingredient_id INTEGER,
+            quantity REAL,
+            unit INTEGER,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id),
+            FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id),
+            FOREIGN KEY(unit) REFERENCES units(unit_id)
+        )
+        """)
+
+        # Table des étapes des recettes
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_steps(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            step_no INTEGER,
+            instruction TEXT,
+            time_minutes REAL,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+        )
+        """)
+
+        # Données de base pour les unités
+        conn.executemany(
+            "INSERT OR IGNORE INTO units(name, abbreviation) VALUES(?,?)",
+            [
+                ("gramme", "g"),
+                ("kilogramme", "kg"),
+                ("millilitre", "ml"),
+                ("litre", "l"),
+                ("pièce", "pc"),
+            ],
+        )
+
         conn.commit()
+
     return (total if total is not None else None), issues
 
 # =========================
