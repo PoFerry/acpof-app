@@ -1044,6 +1044,217 @@ def show_recipe_costs():
             f"⚠️ Remarque : {total_missing} avertissement(s) détecté(s). "
             f"Utilise 'Corriger recette' pour compléter unités ou coûts manquants."
         )
+def show_purchase_planner():
+    st.header("🛒 Planifier les achats (menu)")
+
+    # --- Chargement des recettes disponibles
+    with connect() as conn:
+        recipes = pd.read_sql_query(
+            "SELECT r.recipe_id, r.name, r.yield_qty, u.abbreviation AS yield_unit "
+            "FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit "
+            "ORDER BY r.name",
+            conn
+        )
+
+    if recipes.empty:
+        st.info("Aucune recette disponible. Importe ou crée des recettes d’abord.")
+        return
+
+    # --- Sélection d’une recette et ajout au 'menu' (panier)
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        rec_choice = st.selectbox("Choisir une recette :", recipes["name"].tolist())
+    row = recipes.loc[recipes["name"] == rec_choice].iloc[0]
+    with c2:
+        if pd.notna(row["yield_qty"]) and row["yield_qty"]:
+            st.metric("Rendement", f"{float(row['yield_qty']):.3f} {row['yield_unit'] or ''}".strip())
+        else:
+            st.metric("Rendement", "—")
+    with c3:
+        batches = st.number_input("Nombre de lots", min_value=1, value=1, step=1)
+
+    if "purchase_plan" not in st.session_state:
+        st.session_state.purchase_plan = []  # liste de dicts {recipe_id, name, batches}
+
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("➕ Ajouter au menu", type="primary"):
+            # Si déjà présent, on cumule
+            found = False
+            for it in st.session_state.purchase_plan:
+                if it["recipe_id"] == int(row["recipe_id"]):
+                    it["batches"] += int(batches)
+                    found = True
+                    break
+            if not found:
+                st.session_state.purchase_plan.append({
+                    "recipe_id": int(row["recipe_id"]),
+                    "name": str(row["name"]),
+                    "batches": int(batches),
+                })
+    with colB:
+        if st.button("🧹 Vider le menu"):
+            st.session_state.purchase_plan = []
+
+    # --- Vue du 'menu' (panier de recettes)
+    st.subheader("Recettes du menu")
+    if not st.session_state.purchase_plan:
+        st.caption("Aucune recette ajoutée pour le moment.")
+        return
+
+    # Petit éditeur pour ajuster les lots
+    plan_df = pd.DataFrame(st.session_state.purchase_plan)
+    plan_df = plan_df[["name", "batches"]].rename(columns={"name": "Recette", "batches": "Lots"})
+    plan_df_edit = st.data_editor(
+        plan_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Recette": st.column_config.TextColumn(disabled=True),
+            "Lots": st.column_config.NumberColumn(min_value=0, step=1),
+        },
+        key="purchase_plan_editor",
+    )
+
+    # Synchronise les ajustements dans la session
+    # (si une ligne "Lots" devient 0, on l’enlève)
+    new_plan = []
+    for _, r in plan_df_edit.iterrows():
+        lots = int(r["Lots"]) if pd.notna(r["Lots"]) else 0
+        if lots > 0:
+            # retrouve l'id de recette d'après le nom
+            rid = int(recipes.loc[recipes["name"] == r["Recette"], "recipe_id"].iloc[0])
+            new_plan.append({"recipe_id": rid, "name": r["Recette"], "batches": lots})
+    st.session_state.purchase_plan = new_plan
+
+    if not st.session_state.purchase_plan:
+        st.warning("Ton menu est vide (toutes les lignes ont 0 lot).")
+        return
+
+    st.divider()
+    st.subheader("🧮 Calcul de la liste d’achats")
+
+    # --- Agrégation des ingrédients
+    # On convertit chaque ligne ingrédient vers l'unité par défaut de l’ingrédient pour pouvoir sommer.
+    agg = {}   # key = ingredient name ; value = dict(total_qty, unit_abbr, cpu)
+    issues = []
+
+    with connect() as conn:
+        for it in st.session_state.purchase_plan:
+            rid = it["recipe_id"]
+            lots = it["batches"]
+
+            lines = pd.read_sql_query(
+                "SELECT i.name AS ingredient, ri.quantity AS qty, ur.abbreviation AS unit_recipe, "
+                "i.cost_per_unit AS cpu, ui.abbreviation AS unit_ing "
+                "FROM recipe_ingredients ri "
+                "JOIN ingredients i ON i.ingredient_id = ri.ingredient_id "
+                "LEFT JOIN units ur ON ur.unit_id = ri.unit "
+                "LEFT JOIN units ui ON ui.unit_id = i.unit_default "
+                "WHERE ri.recipe_id = ?",
+                conn, params=(rid,)
+            )
+
+            if lines.empty:
+                issues.append(f"Recette '{it['name']}' : aucun ingrédient lié.")
+                continue
+
+            for _, r in lines.iterrows():
+                ing = clean_text(r["ingredient"])
+                qty = r["qty"]
+                unit_r = clean_text(r["unit_recipe"] or "").lower()
+                unit_i = clean_text(r["unit_ing"] or "").lower()
+                cpu = r["cpu"]
+
+                if pd.isna(qty) or qty is None or str(qty) == "":
+                    issues.append(f"Quantité manquante pour '{ing}' (recette '{it['name']}').")
+                    continue
+                try:
+                    qty = float(qty) * float(lots)  # mise à l’échelle par nombre de lots
+                except Exception:
+                    issues.append(f"Quantité invalide pour '{ing}' (recette '{it['name']}').")
+                    continue
+
+                # Si pas d’unité sur la ligne, on prend l’unité coût (défaut ingrédient) si dispo
+                if not unit_r and unit_i:
+                    unit_r = unit_i
+
+                # Conversion vers l’unité de référence (unit_i) pour agréger
+                if unit_i and unit_r:
+                    if unit_r == unit_i:
+                        qty_base = qty
+                    elif same_group(unit_r, unit_i):
+                        conv = convert_qty(qty, unit_r, unit_i)
+                        if conv is None:
+                            issues.append(f"Conversion impossible {unit_r}→{unit_i} pour '{ing}'.")
+                            continue
+                        qty_base = conv
+                    else:
+                        issues.append(f"Incompatibilité d’unités {unit_r} vs {unit_i} pour '{ing}'.")
+                        continue
+                else:
+                    qty_base = qty  # fallback si pas d’info d’unité
+                    if not unit_i:
+                        issues.append(f"Unité par défaut inconnue pour '{ing}' → somme faite sans conversion.")
+
+                # Agrégation
+                key = ing
+                if key not in agg:
+                    agg[key] = {
+                        "ingredient": ing,
+                        "unit": unit_i or unit_r or "",
+                        "total_qty": 0.0,
+                        "cpu": cpu,   # peut être None
+                    }
+                agg[key]["total_qty"] += float(qty_base)
+
+    if not agg:
+        st.warning("Aucun ingrédient agrégé (vérifie les unités/quantités).")
+        return
+
+    # --- Construction du tableau
+    out_rows = []
+    total_cost_est = 0.0
+    for k, v in agg.items():
+        ing = v["ingredient"]
+        u = v["unit"]
+        q = v["total_qty"]
+        cpu = v["cpu"]
+
+        # Coût estimé = total_qty * cpu si cpu est renseigné et compatible (cpu est par unité 'u')
+        cost_est = None
+        if cpu is not None and not pd.isna(cpu):
+            try:
+                cost_est = float(cpu) * float(q)
+                total_cost_est += cost_est
+            except Exception:
+                cost_est = None
+
+        out_rows.append({
+            "Ingrédient": ing,
+            "Quantité totale": round(q, 3),
+            "Unité": u,
+            "Coût estimé ($)": None if cost_est is None else round(cost_est, 2),
+        })
+
+    out_df = pd.DataFrame(out_rows).sort_values("Ingrédient")
+    st.dataframe(out_df, use_container_width=True)
+
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if total_cost_est > 0:
+            st.metric("Coût total estimé", f"{total_cost_est:.2f} $")
+        else:
+            st.metric("Coût total estimé", "—")
+
+    # Export CSV
+    csv = out_df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Exporter la liste d’achats (CSV)", data=csv, file_name="liste_achats_menu.csv", mime="text/csv")
+
+    if issues:
+        with st.expander("⚠️ Avertissements / conversions"):
+            for msg in issues:
+                st.write("- " + msg)
 
 # =========================
 # Ingrédients — consulter / créer / MAJ
@@ -1333,6 +1544,7 @@ def main():
         "Consulter recettes": show_view_recipes,
         "Corriger recette": show_edit_recipe,
         "Coût des recettes": show_recipe_costs,
+        "Planifier achats": show_purchase_planner,   # ⬅️ nouveau
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
