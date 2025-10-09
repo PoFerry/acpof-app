@@ -7,7 +7,16 @@ import pandas as pd
 from pandas.errors import ParserError
 import streamlit as st
 
-st.set_page_config(page_title="ACPOF - Gestion Recettes", layout="wide")
+# ---------------------------------------------------------
+# Config + Logo
+# ---------------------------------------------------------
+LOGO_PATH = "/mnt/data/Logo_atelierPOF.png"
+
+st.set_page_config(
+    page_title="ACPOF - Gestion Recettes",
+    page_icon=LOGO_PATH,
+    layout="wide",
+)
 
 DB_FILE = "acpof.db"
 
@@ -25,16 +34,12 @@ def to_float_safe(x) -> Optional[float]:
     s = clean_text(x)
     if s == "" or s.lower() == "#value!":
         return None
-    # Supprime tout ce qui n'est pas chiffre, point, virgule ou signe moins
-    # (retire $, €, CA$, espaces, lettres, etc.)
+    # Supprimer tout ce qui n'est pas chiffre, point, virgule ou signe moins
     s = re.sub(r"[^\d,.\-]+", "", s)
 
-    # Cas fréquents: "17,32", "17,32$", "1 234,56", "1.234,56"
-    # Simplification: si on a à la fois ',' et '.', on suppose ',' = décimale et on retire les milliers.
+    # Si ',' et '.' coexistent, on suppose ',' = décimale et '.' = milliers
     if "," in s and "." in s:
-        # retire tous les séparateurs de milliers (points)
         s = s.replace(".", "")
-    # remplace la virgule par un point pour le parse float
     s = s.replace(",", ".")
 
     try:
@@ -42,10 +47,16 @@ def to_float_safe(x) -> Optional[float]:
     except (ValueError, TypeError):
         return None
 
-
 def map_unit_text_to_abbr(u: str) -> Optional[str]:
     s = clean_text(u).lower()
-    s = s.replace("é", "e").replace("è", "e").replace("ê", "e")
+    # Uniformiser accents typiques
+    s = (
+        s.replace("é", "e")
+         .replace("è", "e")
+         .replace("ê", "e")
+         .replace("à", "a")
+         .replace("û", "u")
+    )
     if not s:
         return None
     aliases = {
@@ -55,7 +66,7 @@ def map_unit_text_to_abbr(u: str) -> Optional[str]:
         # volumes
         "ml": "ml", "/ml": "ml", "millilitre": "ml", "millilitres": "ml",
         "l": "l", "/l": "l", "litre": "l", "litres": "l",
-        # pièces / unités
+        # pièces
         "pc": "pc", "/pc": "pc", "piece": "pc", "pieces": "pc",
         "unite": "pc", "/unite": "pc", "unites": "pc",
         "portion": "pc", "/portion": "pc", "pcs": "pc", "pce": "pc", "pces": "pc",
@@ -63,7 +74,7 @@ def map_unit_text_to_abbr(u: str) -> Optional[str]:
     return aliases.get(s, s)
 
 def read_uploaded_csv(uploaded_file) -> pd.DataFrame:
-    """Lecture robuste d'un CSV uploadé."""
+    """Lecture robuste d'un CSV uploadé (détection auto séparateur)."""
     if uploaded_file is None:
         raise ValueError("Aucun fichier à lire")
 
@@ -236,8 +247,8 @@ def convert_qty(qty: float, from_u: str, to_u: str) -> Optional[float]:
 
 def convert_unit_price(cpu: Optional[float], from_u: Optional[str], to_u: Optional[str]) -> Optional[float]:
     """
-    Convertit un coût unitaire (cpu) exprimé 'par from_u' en coût 'par to_u'.
-    Exemple : 10 $/kg → 0.01 $/g
+    Convertit un coût unitaire (cpu) exprimé par 'from_u' en coût par 'to_u'.
+    Exemple : 10 $/kg -> 0.01 $/g
     """
     if cpu is None or pd.isna(cpu) or from_u is None or to_u is None:
         return None
@@ -246,7 +257,6 @@ def convert_unit_price(cpu: Optional[float], from_u: Optional[str], to_u: Option
     except Exception:
         return None
 
-    # quantité de 'from_u' équivalente à 1 'to_u'
     qty_from_for_one_to = convert_qty(1.0, to_u, from_u)
     if qty_from_for_one_to is None:
         return None
@@ -259,18 +269,17 @@ def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
     """
     issues = []
     with connect() as conn:
-        rows = pd.read_sql_query("""
-            SELECT 
-                ri.quantity        AS qty_recipe,
-                ur.abbreviation    AS unit_recipe,
-                i.cost_per_unit    AS cpu,
-                ui.abbreviation    AS unit_ing
-            FROM recipe_ingredients ri
-            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
-            LEFT JOIN units ur ON ur.unit_id = ri.unit
-            LEFT JOIN units ui ON ui.unit_id = i.unit_default
-            WHERE ri.recipe_id = ?
-        """, conn, params=(recipe_id,))
+        rows = pd.read_sql_query(
+            "SELECT "
+            " ri.quantity AS qty_recipe, ur.abbreviation AS unit_recipe, "
+            " i.cost_per_unit AS cpu, ui.abbreviation AS unit_ing "
+            "FROM recipe_ingredients ri "
+            "JOIN ingredients i ON i.ingredient_id = ri.ingredient_id "
+            "LEFT JOIN units ur ON ur.unit_id = ri.unit "
+            "LEFT JOIN units ui ON ui.unit_id = i.unit_default "
+            "WHERE ri.recipe_id = ?",
+            conn, params=(recipe_id,)
+        )
     if rows.empty:
         return 0.0, ["Aucun ingrédient lié."]
 
@@ -329,18 +338,58 @@ def compute_recipe_cost(recipe_id: int) -> Tuple[Optional[float], list]:
     return (total if total is not None else None), issues
 
 # =========================
+# UI helpers
+# =========================
+
+def ui_setup():
+    """CSS global + logo dans la sidebar."""
+    with st.sidebar:
+        st.image(LOGO_PATH, use_column_width=True)
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <style>
+    html, body, [class*="css"] {
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        letter-spacing: 0.2px;
+    }
+    section[data-testid="stSidebar"] { width: 310px !important; }
+    h1, h2, h3 { font-weight: 600; letter-spacing: 0.3px; }
+    .stButton>button[kind="primary"]{
+        border-radius: 12px; padding: 0.6rem 1rem; font-weight: 600;
+    }
+    .stButton>button{ border-radius: 12px; padding: 0.5rem 0.9rem; }
+    div[data-testid="stMetric"]{
+        background: #fff; border-radius: 16px; padding: 0.6rem 0.9rem;
+        box-shadow: 0 1px 8px rgba(0,0,0,.06);
+    }
+    .stDataFrame thead tr th { font-weight: 600 !important; letter-spacing: .2px !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+def top_header(title: str, subtitle: str = ""):
+    col_logo, col_title = st.columns([1, 7], vertical_alignment="center")
+    with col_logo:
+        st.image(LOGO_PATH, width=72)
+    with col_title:
+        st.markdown(f"<h1 style='margin-bottom:0'>{title}</h1>", unsafe_allow_html=True)
+        if subtitle:
+            st.markdown(f"<div style='color:#6b7280'>{subtitle}</div>", unsafe_allow_html=True)
+    st.markdown("<hr style='margin-top:0.8rem;margin-bottom:1rem'/>", unsafe_allow_html=True)
+
+# =========================
 # Import ingrédients (CSV)
 # =========================
 
 def show_import_ingredients():
-    st.header("📦 Importer les ingrédients (CSV)")
+    top_header("📦 Importer les ingrédients (CSV)", "Mettez à jour unités, fournisseurs et coûts")
 
     st.caption(
         "CSV attendu (flexible) - colonnes utiles reconnues :\n"
-        "- **Description de produit** (nom ingrédient)\n"
-        "- **UDM d'inventaire** (g, kg, ml, l, unité…)\n"
-        "- **Prix pour recette** ou **Prix unitaire produit** (coût par unité de l’UDM)\n"
-        "- (optionnel) **Nom Fournisseur**, **Catégorie**"
+        "- Description de produit (nom)\n"
+        "- UDM / UDM d'inventaire (g, kg, ml, l, unité)\n"
+        "- Prix pour recette ou Prix unitaire produit\n"
+        "- (optionnel) Nom Fournisseur, Catégorie"
     )
 
     up = st.file_uploader("Téléverser le CSV d’ingrédients", type=["csv"])
@@ -369,7 +418,6 @@ def show_import_ingredients():
         or colmap.get("unite d'inventaire")
         or colmap.get("udm")
     )
-
     col_cost = (
         colmap.get("prix pour recette")
         or colmap.get("prix unitaire produit")
@@ -417,15 +465,12 @@ def show_import_ingredients():
 # ==========================================
 
 def show_import_recipes():
-    st.header("🧑‍🍳 Importer les recettes (entêtes FR OU positions fixes)")
+    top_header("🧑‍🍳 Importer les recettes", "Entêtes FR ou positions fixes (I/J/K… CG..CZ)")
 
     st.caption(
         "Choisis le mode :\n"
-        "- **Entêtes FR** : colonnes \"Titre de la recette\", \"Type de recette\", "
-        "\"Ingrédient 1/Format ingrédient 1/Quantité ingrédient 1\", \"Étape 1/Temps étape 1\", etc.\n"
-        "- **Positions fixes** :\n"
-        "  - Ingrédient 1 = I (nom), J (unité), K (quantité), puis +3 colonnes jusqu’à avant CG\n"
-        "  - Étape 1 = CG, Temps 1 = CH, Étape 2 = CI, Temps 2 = CJ, … jusqu’à CZ"
+        "- Entêtes FR : 'Titre de la recette', 'Type de recette', 'Ingrédient 1/Format 1/Quantité 1', 'Étape 1/Temps 1'…\n"
+        "- Positions fixes : I (nom), J (unité), K (quantité) ; étapes dès CG: (CG,C H)… jusqu'à CZ."
     )
 
     mode = st.radio("Mode d’import :", ["Entêtes FR", "Positions fixes"], horizontal=True)
@@ -440,14 +485,14 @@ def show_import_recipes():
         return n - 1
 
     if mode == "Positions fixes":
-        col_ing_start_str = st.text_input("Colonne du **premier ingréd. (Nom)**", value="I")
-        col_step_start_str = st.text_input("Colonne de **la première étape**", value="CG")
-        col_step_end_str = st.text_input("Colonne **fin des étapes**", value="CZ")
+        col_ing_start_str = st.text_input("Colonne du premier ingréd. (Nom)", value="I")
+        col_step_start_str = st.text_input("Colonne de la première étape", value="CG")
+        col_step_end_str = st.text_input("Colonne fin des étapes", value="CZ")
         ING_START = col_index(col_ing_start_str)
         STEPS_START = col_index(col_step_start_str)
         STEPS_END = col_index(col_step_end_str)
 
-    up = st.file_uploader("Téléverser le **CSV des recettes**", type=["csv"])
+    up = st.file_uploader("Téléverser le CSV des recettes", type=["csv"])
     if not up:
         return
 
@@ -468,7 +513,7 @@ def show_import_recipes():
     YUNIT = colmap.get("format rendement") or colmap.get("unité de rendement") or colmap.get("unite de rendement") or colmap.get("format de rendement")
 
     if mode == "Entêtes FR" and not TITLE:
-        st.error("Mode 'Entêtes FR' : colonne **'Titre de la recette'** introuvable. Passe en 'Positions fixes' ou renomme l’en-tête.")
+        st.error("Mode 'Entêtes FR' : colonne 'Titre de la recette' introuvable. Passe en 'Positions fixes' ou renomme l’en-tête.")
         return
 
     meta_ins = meta_upd = 0
@@ -657,7 +702,7 @@ def show_import_recipes():
         f"Nouvelles recettes: {new_rec} • Nouveaux ingrédients: {new_ing}"
     )
 
-    with st.expander("🔎 Détails par ligne importée"):
+    with st.expander("Détails par ligne importée"):
         dbg = pd.DataFrame(per_row_debug, columns=["recette", "ingrédients_insérés", "étapes_insérées", "statut"])
         st.dataframe(dbg, use_container_width=True)
 
@@ -666,7 +711,7 @@ def show_import_recipes():
 # =========================
 
 def show_view_recipes():
-    st.header("📖 Consulter les recettes")
+    top_header("📖 Consulter les recettes", "Parcourir, filtrer et analyser les fiches")
 
     col1, col2, col3 = st.columns([2,1,1])
     with col1:
@@ -815,7 +860,7 @@ def show_view_recipes():
 # =========================
 
 def show_edit_recipe():
-    st.header("🛠️ Corriger une recette")
+    top_header("🛠️ Corriger une recette", "Éditer ingrédients, quantités, étapes, prix")
 
     # Sélecteur de recette
     with connect() as conn:
@@ -995,7 +1040,7 @@ def show_edit_recipe():
 # =========================
 
 def show_recipe_costs():
-    st.header("💰 Coût des recettes")
+    top_header("💰 Coût des recettes", "Vue tableau + export CSV")
 
     with connect() as conn:
         recipes = pd.read_sql_query(
@@ -1044,8 +1089,13 @@ def show_recipe_costs():
             f"⚠️ Remarque : {total_missing} avertissement(s) détecté(s). "
             f"Utilise 'Corriger recette' pour compléter unités ou coûts manquants."
         )
+
+# =========================
+# Planifier achats (menu)
+# =========================
+
 def show_purchase_planner():
-    st.header("🛒 Planifier les achats (menu)")
+    top_header("🛒 Planifier les achats", "Sélectionne des recettes et génère ta liste d’achats")
 
     # --- Chargement des recettes disponibles
     with connect() as conn:
@@ -1079,7 +1129,6 @@ def show_purchase_planner():
     colA, colB = st.columns([1, 1])
     with colA:
         if st.button("➕ Ajouter au menu", type="primary"):
-            # Si déjà présent, on cumule
             found = False
             for it in st.session_state.purchase_plan:
                 if it["recipe_id"] == int(row["recipe_id"]):
@@ -1092,17 +1141,18 @@ def show_purchase_planner():
                     "name": str(row["name"]),
                     "batches": int(batches),
                 })
+            st.toast("Recette ajoutée au menu", icon="✅")
     with colB:
         if st.button("🧹 Vider le menu"):
             st.session_state.purchase_plan = []
+            st.toast("Menu vidé", icon="🧹")
 
-    # --- Vue du 'menu' (panier de recettes)
+    # --- Vue du 'menu'
     st.subheader("Recettes du menu")
     if not st.session_state.purchase_plan:
         st.caption("Aucune recette ajoutée pour le moment.")
         return
 
-    # Petit éditeur pour ajuster les lots
     plan_df = pd.DataFrame(st.session_state.purchase_plan)
     plan_df = plan_df[["name", "batches"]].rename(columns={"name": "Recette", "batches": "Lots"})
     plan_df_edit = st.data_editor(
@@ -1116,13 +1166,11 @@ def show_purchase_planner():
         key="purchase_plan_editor",
     )
 
-    # Synchronise les ajustements dans la session
-    # (si une ligne "Lots" devient 0, on l’enlève)
+    # Sync session
     new_plan = []
     for _, r in plan_df_edit.iterrows():
         lots = int(r["Lots"]) if pd.notna(r["Lots"]) else 0
         if lots > 0:
-            # retrouve l'id de recette d'après le nom
             rid = int(recipes.loc[recipes["name"] == r["Recette"], "recipe_id"].iloc[0])
             new_plan.append({"recipe_id": rid, "name": r["Recette"], "batches": lots})
     st.session_state.purchase_plan = new_plan
@@ -1135,7 +1183,6 @@ def show_purchase_planner():
     st.subheader("🧮 Calcul de la liste d’achats")
 
     # --- Agrégation des ingrédients
-    # On convertit chaque ligne ingrédient vers l'unité par défaut de l’ingrédient pour pouvoir sommer.
     agg = {}   # key = ingredient name ; value = dict(total_qty, unit_abbr, cpu)
     issues = []
 
@@ -1170,16 +1217,14 @@ def show_purchase_planner():
                     issues.append(f"Quantité manquante pour '{ing}' (recette '{it['name']}').")
                     continue
                 try:
-                    qty = float(qty) * float(lots)  # mise à l’échelle par nombre de lots
+                    qty = float(qty) * float(lots)
                 except Exception:
                     issues.append(f"Quantité invalide pour '{ing}' (recette '{it['name']}').")
                     continue
 
-                # Si pas d’unité sur la ligne, on prend l’unité coût (défaut ingrédient) si dispo
                 if not unit_r and unit_i:
                     unit_r = unit_i
 
-                # Conversion vers l’unité de référence (unit_i) pour agréger
                 if unit_i and unit_r:
                     if unit_r == unit_i:
                         qty_base = qty
@@ -1193,18 +1238,17 @@ def show_purchase_planner():
                         issues.append(f"Incompatibilité d’unités {unit_r} vs {unit_i} pour '{ing}'.")
                         continue
                 else:
-                    qty_base = qty  # fallback si pas d’info d’unité
+                    qty_base = qty
                     if not unit_i:
                         issues.append(f"Unité par défaut inconnue pour '{ing}' → somme faite sans conversion.")
 
-                # Agrégation
                 key = ing
                 if key not in agg:
                     agg[key] = {
                         "ingredient": ing,
                         "unit": unit_i or unit_r or "",
                         "total_qty": 0.0,
-                        "cpu": cpu,   # peut être None
+                        "cpu": cpu,
                     }
                 agg[key]["total_qty"] += float(qty_base)
 
@@ -1212,7 +1256,6 @@ def show_purchase_planner():
         st.warning("Aucun ingrédient agrégé (vérifie les unités/quantités).")
         return
 
-    # --- Construction du tableau
     out_rows = []
     total_cost_est = 0.0
     for k, v in agg.items():
@@ -1221,7 +1264,6 @@ def show_purchase_planner():
         q = v["total_qty"]
         cpu = v["cpu"]
 
-        # Coût estimé = total_qty * cpu si cpu est renseigné et compatible (cpu est par unité 'u')
         cost_est = None
         if cpu is not None and not pd.isna(cpu):
             try:
@@ -1247,7 +1289,6 @@ def show_purchase_planner():
         else:
             st.metric("Coût total estimé", "—")
 
-    # Export CSV
     csv = out_df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Exporter la liste d’achats (CSV)", data=csv, file_name="liste_achats_menu.csv", mime="text/csv")
 
@@ -1261,7 +1302,7 @@ def show_purchase_planner():
 # =========================
 
 def show_manage_ingredients():
-    st.header("🥫 Ingrédients — consulter et créer")
+    top_header("🥫 Ingrédients", "Consulter, créer et mettre à jour")
 
     # Sélecteur d'UDM de référence pour l'affichage des prix
     ref_unit = st.selectbox(
@@ -1309,7 +1350,6 @@ def show_manage_ingredients():
     if df.empty:
         st.info("Aucun ingrédient trouvé.")
     else:
-        # Calcul du prix par UDM de référence
         def price_per_ref(row):
             return convert_unit_price(row["cost_per_unit"], row["unit"], ref_unit)
 
@@ -1331,7 +1371,6 @@ def show_manage_ingredients():
     # --- Formulaire créer / mettre à jour ---
     st.subheader("Créer / mettre à jour un ingrédient")
 
-    # Précharger unités disponibles
     with connect() as conn:
         unit_choices = [r[0] for r in conn.execute("SELECT abbreviation FROM units ORDER BY abbreviation").fetchall()]
         ing_names = [r[0] for r in conn.execute("SELECT name FROM ingredients ORDER BY name").fetchall()]
@@ -1409,13 +1448,11 @@ def show_manage_ingredients():
 # =========================
 
 def show_create_recipe():
-    st.header("🆕 Créer une recette")
+    top_header("🆕 Créer une recette", "Renseigne infos, ingrédients et étapes")
 
-    # Unités pour listes déroulantes
     with connect() as conn:
         unit_choices = [r[0] for r in conn.execute("SELECT abbreviation FROM units ORDER BY abbreviation").fetchall()]
 
-    # --- Métadonnées ---
     st.subheader("Informations")
     colA, colB, colC = st.columns([2, 1, 1])
     with colA:
@@ -1519,14 +1556,16 @@ def show_create_recipe():
 # =========================
 
 def show_home():
-    st.title("🍞 ACPOF — Gestion Recettes & Ingrédients")
+    top_header("Atelier Culinaire — ACPOF", "Gestion des recettes, coûts et achats")
+    st.success("Bienvenue ! Utilise le menu de gauche pour naviguer 👈")
     st.write(
-        "- **Importer ingrédients** : charge ton CSV d'intrants (prix, unités, etc.)\n"
-        "- **Importer recettes** : charge ton CSV de recettes (**entêtes FR** ou **positions fixes I/J/K … CG..CZ**)\n"
-        "- **Créer recette** : crée une fiche recette manuellement\n"
-        "- **Consulter recettes** : recherche et affiche ingrédients + quantités + méthode + coût\n"
-        "- **Corriger recette** : édite une recette (ingrédients, quantités, étapes, prix de vente…)\n"
-        "- **Coût des recettes** : vue tableau (coût total, coût/unité, prix de vente, marge) + export CSV"
+        "- 🥫 Importer ingrédients : charge ton CSV d'intrants (prix, UDM…)\n"
+        "- 🧑‍🍳 Importer recettes : CSV de recettes (entêtes FR ou colonnes fixes)\n"
+        "- 🆕 Créer recette : créer une fiche à la main\n"
+        "- 📖 Consulter recettes : ingrédients, quantités, méthode, coût\n"
+        "- 🛠️ Corriger recette : éditer les recettes existantes\n"
+        "- 💰 Coût des recettes : vue tableau + export CSV\n"
+        "- 🛒 Planifier achats : sélection de recettes, lots → liste d’achats"
     )
 
 # =========================
@@ -1535,19 +1574,20 @@ def show_home():
 
 def main():
     ensure_db()
-    pages = {
-        "Accueil": show_home,
-        "Ingrédients": show_manage_ingredients,
-        "Consulter recettes": show_view_recipes,
-        "Créer recette": show_create_recipe,
-        "Corriger recette": show_edit_recipe,
-        "Coût des recettes": show_recipe_costs,
-        "Planifier achats": show_purchase_planner,   # ⬅️ nouveau
-        "Importer ingrédients": show_import_ingredients,
-        "Importer recettes": show_import_recipes,
+    ui_setup()
 
+    pages = {
+        "🏠 Accueil": show_home,
+        "🥫 Ingrédients": show_manage_ingredients,
+        "📦 Importer ingrédients": show_import_ingredients,
+        "🧑‍🍳 Importer recettes": show_import_recipes,
+        "🆕 Créer recette": show_create_recipe,
+        "📖 Consulter recettes": show_view_recipes,
+        "🛠️ Corriger recette": show_edit_recipe,
+        "💰 Coût des recettes": show_recipe_costs,
+        "🛒 Planifier achats": show_purchase_planner,
     }
-    page = st.sidebar.selectbox("Navigation", list(pages.keys()))
+    page = st.sidebar.radio("Navigation", list(pages.keys()))
     pages[page]()
 
 if __name__ == "__main__":
