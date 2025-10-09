@@ -156,7 +156,7 @@ def connect():
 
 # ---------- Initialisation de la base ----------
 def ensure_db():
-    """Crée les tables si elles n’existent pas déjà."""
+    """Crée les tables si elles n’existent pas déjà et initialise les unités."""
     with connect() as conn:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS units(
@@ -184,19 +184,32 @@ def ensure_db():
             sell_price REAL,
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )""")
-# --- Initialisation des unités par défaut ---
-conn.executemany(
-    "INSERT OR IGNORE INTO units(name, abbreviation) VALUES (?,?)",
-    [
-        ("gramme", "g"),
-        ("kilogramme", "kg"),
-        ("millilitre", "ml"),
-        ("litre", "l"),
-        ("pièce", "pc"),
-    ],
-)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_lines(
+            line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            ingredient_id INTEGER,
+            qty REAL,
+            unit TEXT,
+            note TEXT,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id),
+            FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
+        )""")
 
-        
+        # --- Initialisation des unités par défaut ---
+        conn.executemany(
+            "INSERT OR IGNORE INTO units(name, abbreviation) VALUES (?,?)",
+            [
+                ("gramme", "g"),
+                ("kilogramme", "kg"),
+                ("millilitre", "ml"),
+                ("litre", "l"),
+                ("pièce", "pc"),
+            ],
+        )
+
+        conn.commit()
+
         conn.commit()
 # ===============================================================
 # Partie 2 / 3 — Importation ingrédients + recettes et conversions
