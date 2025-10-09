@@ -14,6 +14,33 @@ from typing import Optional, Tuple
 import pandas as pd
 from pandas.errors import ParserError
 import streamlit as st
+import sys, traceback
+from streamlit.runtime.media_file_storage import MediaFileStorageError
+
+DEBUG_MODE = True  # passe à False quand tout va bien
+
+def show_exception(e: Exception):
+    """Affiche proprement l’exception dans l’app."""
+    st.error(f"Une erreur s'est produite : **{type(e).__name__}** — {e}")
+    if DEBUG_MODE:
+        with st.expander("Détails techniques (traceback)"):
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            st.code(tb, language="python")
+
+def sanity_checks():
+    """Vérifications rapides (logo, DB, versions). Appelle-la au démarrage."""
+    st.sidebar.write("### ℹ️ Diagnostic rapide")
+    st.sidebar.write(f"Python: {sys.version.split()[0]}")
+    st.sidebar.write(f"Pandas: {pd.__version__}")
+    base = Path(__file__).resolve().parent
+    st.sidebar.write(f"Dossier appli: `{base}`")
+    st.sidebar.write(f"DB: `{DB_FILE}`")
+    if not base.exists():
+        st.sidebar.warning("Dossier application introuvable.")
+    if not LOGO_PATH.exists():
+        st.sidebar.warning(f"Logo introuvable: `{LOGO_PATH}` (attention à la casse et au chemin)")
+    if not DATA_DIR.exists():
+        st.sidebar.warning(f"Dossier data introuvable: `{DATA_DIR}`")
 
 # ---------- Config & chemins ----------
 BASE_DIR = Path(__file__).resolve().parent
@@ -43,14 +70,15 @@ def ui_setup():
 def app_header(title: str, subtitle: str = ""):
     c1, c2 = st.columns([1, 5])
     with c1:
+    try:
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), use_container_width=True)
         else:
             st.caption("Logo manquant : assets/Logo_atelierPOF.png")
-    with c2:
-        st.markdown(f"<div class='acpof-title'>🍞 {title}</div>", unsafe_allow_html=True)
-        if subtitle:
-            st.caption(subtitle)
+    except MediaFileStorageError as e:
+        st.caption("Problème de lecture du logo (fichier corrompu ?)")
+        if DEBUG_MODE:
+            show_exception(e)
 
 # ---------- Helpers généraux ----------
 def clean_text(x):
@@ -1366,41 +1394,44 @@ def page_home():
 # MAIN
 # =========================================================
 def main():
-    ui_setup()
-    ensure_db()
+    try:
+        ui_setup()
+        sanity_checks()  # affiche infos utiles dans la sidebar
+        ensure_db()
+        st.sidebar.header("Navigation")
+        page = st.sidebar.radio(
+            "Aller à",
+            [
+                "Accueil",
+                "Importer données",
+                "Ingrédients",
+                "Créer recette",
+                "Consulter recettes",
+                "Corriger recette",
+                "Coût des recettes",
+                "Planifier achats",
+            ],
+            index=0,
+        )
+        if page == "Accueil":
+            page_home()
+        elif page == "Importer données":
+            page_import_combined()
+        elif page == "Ingrédients":
+            page_manage_ingredients()
+        elif page == "Créer recette":
+            page_create_recipe()
+        elif page == "Consulter recettes":
+            page_view_recipes()
+        elif page == "Corriger recette":
+            page_edit_recipe()
+        elif page == "Coût des recettes":
+            page_recipe_costs()
+        elif page == "Planifier achats":
+            page_purchase_planner()
 
-    st.sidebar.header("Navigation")
-    page = st.sidebar.radio(
-        "Aller à",
-        [
-            "Accueil",
-            "Importer données",
-            "Ingrédients",
-            "Créer recette",
-            "Consulter recettes",
-            "Corriger recette",
-            "Coût des recettes",
-            "Planifier achats",
-        ],
-        index=0,
-    )
-
-    if page == "Accueil":
-        page_home()
-    elif page == "Importer données":
-        page_import_combined()
-    elif page == "Ingrédients":
-        page_manage_ingredients()
-    elif page == "Créer recette":
-        page_create_recipe()
-    elif page == "Consulter recettes":
-        page_view_recipes()
-    elif page == "Corriger recette":
-        page_edit_recipe()
-    elif page == "Coût des recettes":
-        page_recipe_costs()
-    elif page == "Planifier achats":
-        page_purchase_planner()
+    except Exception as e:
+        show_exception(e)
 
 if __name__ == "__main__":
     main()
