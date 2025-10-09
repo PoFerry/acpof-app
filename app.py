@@ -1538,13 +1538,14 @@ def main():
     pages = {
         "Accueil": show_home,
         "Ingrédients": show_manage_ingredients,
-        "Importer ingrédients": show_import_ingredients,
-        "Importer recettes": show_import_recipes,
-        "Créer recette": show_create_recipe,
         "Consulter recettes": show_view_recipes,
+        "Créer recette": show_create_recipe,
         "Corriger recette": show_edit_recipe,
         "Coût des recettes": show_recipe_costs,
         "Planifier achats": show_purchase_planner,   # ⬅️ nouveau
+        "Importer ingrédients": show_import_ingredients,
+        "Importer recettes": show_import_recipes,
+
     }
     page = st.sidebar.selectbox("Navigation", list(pages.keys()))
     pages[page]()
