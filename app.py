@@ -66,25 +66,19 @@ def ui_setup():
         """,
         unsafe_allow_html=True,
     )
-
 def app_header(title: str, subtitle: str = ""):
     c1, c2 = st.columns([1, 5])
     with c1:
-    try:
-        if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width='stretch')
-        else:
-            st.caption("Logo manquant : assets/Logo_atelierPOF.png")
-    except MediaFileStorageError as e:
-        st.caption("Problème de lecture du logo (fichier corrompu ?)")
-        if DEBUG_MODE:
-            show_exception(e)
+        try:
+            if LOGO_PATH.exists():
+                st.image(str(LOGO_PATH), width='stretch')
+            else:
+                st.caption("Logo manquant : assets/Logo_atelierPOF.png")
+        except MediaFileStorageError as e:
+            st.caption("Problème de lecture du logo (fichier corrompu ?)")
+            if DEBUG_MODE:
+                show_exception(e)
 
-# ---------- Helpers généraux ----------
-def clean_text(x):
-    """Normalise les textes : enlève espaces insécables, trim."""
-    if x is None:
-        return ""
     return str(x).replace("\u00A0", " ").strip()
 
 def to_float_safe(x) -> Optional[float]:
