@@ -8,6 +8,8 @@ import sqlite3
 import pandas as pd
 import re
 from pathlib import Path
+from typing import Optional, Tuple
+
 
 # Emplacement de la base (ex: /app/data/acpof.db). On crée le dossier si besoin.
 APP_DIR = Path(__file__).parent
