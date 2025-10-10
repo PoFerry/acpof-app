@@ -158,8 +158,7 @@ def connect():
 def ensure_db():
     """Crée les tables si elles n’existent pas déjà et initialise les unités."""
     with connect() as conn:
-        
-               conn.execute(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS units(
                 unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,29 +179,44 @@ def ensure_db():
                 FOREIGN KEY(unit_default) REFERENCES units(unit_id)
             )
             """
-        # Texte / méthode de la recette
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipe_texts(
-            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_id INTEGER,
-            instructions TEXT,
-            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
         )
-        """)
 
-        # Lignes ingrédients de la recette
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipe_lines(
-            line_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_id INTEGER,
-            ingredient_id INTEGER,
-            qty REAL,
-            unit TEXT,
-            note TEXT,
-            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id),
-            FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
+       conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipes(
+                recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                type TEXT,
+                yield_qty REAL,
+                yield_unit INTEGER,
+                FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
+            )
+            """
         )
-        """)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipe_texts(
+                text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_id INTEGER,
+                instructions TEXT,
+                FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipe_lines(
+                line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_id INTEGER,
+                ingredient_id INTEGER,
+                qty REAL,
+                unit TEXT,
+                note TEXT,
+                FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id) ON DELETE CASCADE,
+                FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
+            )
+            """
+        )
 
         # --- Initialisation des unités par défaut ---
         conn.executemany(
