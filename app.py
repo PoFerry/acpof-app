@@ -150,6 +150,7 @@ def to_float_safe(x) -> Optional[float]:
 
 def connect():
     """Connexion SQLite avec activation des clés étrangères."""
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
