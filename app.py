@@ -895,100 +895,83 @@ def page_edit_recipe():
         st.success("Recette mise à jour avec succès ✅")
 
         st.success("Recette mise à jour.")
-def page_view_edit_recipe():
+def show_view_edit_recipe():
     """
-    Page unique pour : sélectionner une recette, afficher toutes ses infos,
-    éditer (métadonnées + ingrédients + méthode) et enregistrer en BD.
-    Compatible avec tables: recipes, recipe_lines, ingredients, recipe_texts.
+    Page unique pour:
+      - Consulter une recette (sélecteur + infos de base)
+      - Corriger métadonnées (nom, type, rendement, unité, prix)
+      - Corriger ingrédients (table éditable)
+      - Corriger méthode (texte libre)
+    Nécessite :
+      - connect()
+      - fetch_recipe_ingredients_df(conn, rid)
+      - fetch_recipe_method_text(conn, rid)
+      - upsert_recipe_ingredients(conn, rid, rows)
+      - table_exists(conn, table_name)
+      - DB_PATH (pour le pied de page diagnostic)
     """
     st.header("📖 Consulter & corriger une recette")
 
-    # Sélection de la recette
+    # ----- 1) Sélection de la recette -----
     with connect() as conn:
         recipes = pd.read_sql_query(
-            "SELECT recipe_id, name FROM recipes ORDER BY name", conn
+            "SELECT recipe_id, name FROM recipes ORDER BY name",
+            conn
         )
         units = pd.read_sql_query(
-            "SELECT unit_id, abbreviation FROM units ORDER BY abbreviation", conn
+            "SELECT abbreviation FROM units ORDER BY abbreviation",
+            conn
         )
 
     if recipes.empty:
-        st.info("Aucune recette en base.")
+        st.info("Aucune recette en base. Importe ou crée d’abord des recettes.")
         return
 
-    rec_name = st.selectbox("Choisir une recette :", recipes["name"].tolist(), index=0)
+    rec_name = st.selectbox(
+        "Choisir une recette :", 
+        recipes["name"].tolist()
+    )
     rid = int(recipes.loc[recipes["name"] == rec_name, "recipe_id"].iloc[0])
 
-    # Charger métadonnées, ingrédients, méthode
-    # ---------- Chargement des données ----------
-with connect() as conn:
-    meta = pd.read_sql_query(
-        """
-        SELECT r.recipe_id, r.name, r.type, r.yield_qty, 
-               u.abbreviation AS yield_unit, r.sell_price
-        FROM recipes r
-        LEFT JOIN units u ON u.unit_id = r.yield_unit
-        WHERE r.recipe_id=?
-        """,
-        conn, params=(rid,)
-    )
-
-    ing = fetch_recipe_ingredients_df(conn, rid)
-    method_text = fetch_recipe_method_text(conn, rid)
-
-# ---------- Affichage ----------
-st.subheader("Ingrédients")
-st.dataframe(ing, use_container_width=True)
-
-st.subheader("Méthode / instructions")
-method_text = st.text_area("Texte de la méthode", value=method_text, height=200)
-
-# ---------- Sauvegarde ----------
-if st.button("💾 Enregistrer les modifications"):
+    # ----- 2) Chargement des données de la recette -----
     with connect() as conn:
-        upsert_recipe_ingredients(conn, rid, ing_rows)
-        conn.execute(
-            "UPDATE recipe_texts SET instructions=? WHERE recipe_id=?",
-            (method_text, rid)
+        meta = pd.read_sql_query(
+            """
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, 
+                   u.abbreviation AS yield_unit, r.sell_price
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+            WHERE r.recipe_id=?
+            """,
+            conn, params=(rid,)
         )
-        conn.commit()
-    st.success("Recette mise à jour avec succès ✅")
+        ing_df = fetch_recipe_ingredients_df(conn, rid)
+        method_text = fetch_recipe_method_text(conn, rid)
 
-# ---------- Métadonnées ----------
-r = meta.iloc[0]
-st.subheader("Informations de base")
+    # Vérifications minimales
+    if meta.empty:
+        st.error("Impossible de charger la recette sélectionnée.")
+        return
 
-colA, colB, colC = st.columns([2, 1, 1])
-with colA:
-    new_name = st.text_input("Nom", value=r["name"])
-    new_type = st.text_input("Catégorie / type", value=(r["type"] or ""))
-with colB:
-    new_yield_qty = st.number_input(
-        "Rendement - quantité", min_value=0.0,
-        value=float(r["yield_qty"]) if pd.notna(r["yield_qty"]) else 0.0,
-        step=0.1, format="%.3f"
-    )
-    unit_choices = units["abbreviation"].tolist()
-    new_yield_unit = st.selectbox(
-        "Rendement - unité",
-        options=[""] + unit_choices,
-        index=(unit_choices.index(r["yield_unit"]) + 1)
-        if pd.notna(r["yield_unit"]) and r["yield_unit"] in unit_choices else 0
-    )
+    # ================================
+    # A) MÉTADONNÉES (consultation/MAJ)
+    # ================================
+    r = meta.iloc[0]
+    st.subheader("Informations de base")
 
-    # ---------- Métadonnées ----------
-r = meta.iloc[0]
-st.subheader("Informations de base")  # ✅ aligné à gauche, sans indentation
-    
-colA, colB, colC = st.columns([2, 1, 1])
+    colA, colB, colC = st.columns([2, 1, 1])
+
     with colA:
         new_name = st.text_input("Nom", value=r["name"])
         new_type = st.text_input("Catégorie / type", value=(r["type"] or ""))
+
     with colB:
         new_yield_qty = st.number_input(
-            "Rendement - quantité", min_value=0.0,
+            "Rendement - quantité",
+            min_value=0.0,
             value=float(r["yield_qty"]) if pd.notna(r["yield_qty"]) else 0.0,
-            step=0.1, format="%.3f"
+            step=0.1,
+            format="%.3f"
         )
         unit_choices = units["abbreviation"].tolist()
         new_yield_unit = st.selectbox(
@@ -997,134 +980,181 @@ colA, colB, colC = st.columns([2, 1, 1])
             index=(unit_choices.index(r["yield_unit"]) + 1)
             if pd.notna(r["yield_unit"]) and r["yield_unit"] in unit_choices else 0
         )
+
     with colC:
-        new_sell_price = st.number_input(
+        new_price = st.number_input(
             "Prix de vente ($)",
             min_value=0.0,
             value=float(r["sell_price"]) if pd.notna(r["sell_price"]) else 0.0,
-            step=0.1, format="%.2f"
+            step=0.01,
+            format="%.2f"
         )
 
-    # ---------- Ingrédients ----------
-    st.subheader("🥕 Ingrédients (ordre d'origine conservé)")
-    if ing.empty:
-        ing_edit = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité", "Note"])
-    else:
-        ing_edit = pd.DataFrame({
-            "Ingrédient": ing["ingredient"].map(clean_text),
-            "Quantité": ing["qty"],
-            "Unité": ing["unit"].fillna(""),
-            "Note": ing["note"].fillna(""),
-        })
-
-    ing_edit = st.data_editor(
-        ing_edit,
-        num_rows="dynamic",
-        width="stretch",
-        column_config={
-            "Ingrédient": st.column_config.TextColumn(help="Nom exact (créé si nouveau)"),
-            "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01),
-            "Unité": st.column_config.SelectboxColumn(
-                options=["", "g", "kg", "ml", "l", "pc"], help="UDM de la quantité"
-            ),
-            "Note": st.column_config.TextColumn(help="Optionnel: précision, préparation..."),
-        },
-        key="view_edit_ing_editor",
-    )
-    st.caption("Tu peux ajouter ou supprimer des lignes; l’ordre affiché sera conservé.")
-
-    # ---------- Méthode ----------
-    st.subheader("📋 Méthode de préparation")
-    method_text = st.text_area(
-        "Instructions (texte libre)",
-        value=(txt_row[0] if txt_row and txt_row[0] else ""),
-        height=220,
-    )
-
-    st.divider()
-    save = st.button("💾 Enregistrer les modifications", type="primary")
-
-    if save:
-        v_name = clean_text(new_name)
+    if st.button("💾 Mettre à jour les informations de base"):
+        v_name = (new_name or "").strip()
         if not v_name:
             st.error("Le nom de la recette ne peut pas être vide.")
-            return
+        else:
+            try:
+                with connect() as conn:
+                    # Convertit l’abréviation en unit_id si fournie
+                    if new_yield_unit:
+                        uid_row = conn.execute(
+                            "SELECT unit_id FROM units WHERE abbreviation=?",
+                            (new_yield_unit,)
+                        ).fetchone()
+                        yuid = uid_row[0] if uid_row else None
+                    else:
+                        yuid = None
 
-        ing_rows = []
-        for _, row in ing_edit.iterrows():
-            ing_name = clean_text(row.get("Ingrédient", ""))
-            if not ing_name:
-                continue
-            qty = to_float_safe(row.get("Quantité"))
-            uabbr = map_unit_text_to_abbr(row.get("Unité"))
-            note = clean_text(row.get("Note", ""))
-            ing_rows.append((ing_name, qty, uabbr, note))
+                    conn.execute(
+                        """
+                        UPDATE recipes
+                        SET name=?, type=?, yield_qty=?, yield_unit=?, sell_price=?
+                        WHERE recipe_id=?
+                        """,
+                        (
+                            v_name,
+                            (new_type or None),
+                            new_yield_qty if new_yield_qty > 0 else None,
+                            yuid,
+                            new_price if new_price > 0 else None,
+                            rid,
+                        ),
+                    )
+                    conn.commit()
 
+                st.success("Informations de base mises à jour ✅")
+                st.experimental_rerun()
+            except sqlite3.IntegrityError as e:
+                st.error(f"Conflit (nom de recette déjà utilisé ?) : {e}")
+            except Exception as e:
+                st.error(f"Erreur pendant la mise à jour : {e}")
+
+    st.divider()
+
+    # =====================================
+    # B) INGRÉDIENTS (table éditable + save)
+    # =====================================
+    st.subheader("Ingrédients")
+
+    # Prépare un DataFrame éditable (colonnes standardisées)
+    if ing_df.empty:
+        edit_df = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité", "Note"])
+    else:
+        edit_df = pd.DataFrame({
+            "Ingrédient": ing_df["ingredient"].map(lambda x: "" if pd.isna(x) else str(x)),
+            "Quantité": ing_df["qty"],
+            "Unité": ing_df["unit"].fillna(""),
+            "Note": ing_df.get("note", "").fillna(""),
+        })
+
+    # Éditeur : la colonne 'Unité' propose les abréviations de la table units
+    edit_df = st.data_editor(
+        edit_df,
+        num_rows="dynamic",
+        column_config={
+            "Ingrédient": st.column_config.TextColumn(help="Nom exact de l’ingrédient (créé si nouveau)"),
+            "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01, help="Quantité pour la recette"),
+            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices, help="Abréviation d’unité"),
+            "Note": st.column_config.TextColumn(help="Facultatif"),
+        },
+        key="ing_editor_view_edit",
+    )
+
+    # Construction des lignes à sauvegarder (ing_rows)
+    ing_rows = []
+    for _, row in edit_df.iterrows():
+        name = (str(row.get("Ingrédient", "")).strip())
+        if not name:
+            continue
+        qty = row.get("Quantité", None)
+        try:
+            qty = float(qty) if qty is not None and str(qty) != "" else None
+        except Exception:
+            qty = None
+        uabbr = (str(row.get("Unité", "")).strip() or None)
+        note = (str(row.get("Note", "")).strip() or "")
+        ing_rows.append((name, qty, uabbr, note))
+
+    if st.button("💾 Enregistrer ingrédients"):
         try:
             with connect() as conn:
-                conn.execute("BEGIN")
-                yuid = unit_id_by_abbr(conn, new_yield_unit) if new_yield_unit else None
+                upsert_recipe_ingredients(conn, rid, ing_rows)
+                conn.commit()
+            st.success("Ingrédients enregistrés ✅")
+            st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Erreur d’enregistrement des ingrédients : {e}")
 
-                # 1️⃣ Mise à jour recette
-                conn.execute(
-                    "UPDATE recipes SET name=?, type=?, yield_qty=?, yield_unit=?, sell_price=? WHERE recipe_id=?",
-                    (
-                        v_name,
-                        clean_text(new_type) or None,
-                        new_yield_qty if new_yield_qty > 0 else None,
-                        yuid,
-                        new_sell_price if new_sell_price > 0 else None,
-                        rid,
-                    ),
-                )
+    st.divider()
 
-                # 2️⃣ Réécriture ingrédients
-                conn.execute("DELETE FROM recipe_lines WHERE recipe_id=?", (rid,))
-                for (ing_name, qty, uabbr, note) in ing_rows:
-                    iid = conn.execute(
-                        "SELECT ingredient_id FROM ingredients WHERE name=?",
-                        (ing_name,),
-                    ).fetchone()
-                    if not iid:
-                        conn.execute(
-                            "INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)",
-                            (ing_name,),
-                        )
-                        iid = conn.execute(
-                            "SELECT ingredient_id FROM ingredients WHERE name=?",
-                            (ing_name,),
-                        ).fetchone()
-                    iid = iid[0]
+    # =============================
+    # C) MÉTHODE (texte + sauvegarde)
+    # =============================
+    st.subheader("Méthode / instructions")
+    method_text = st.text_area("Texte de la méthode", value=method_text, height=240)
+
+    if st.button("💾 Enregistrer la méthode"):
+        try:
+            with connect() as conn:
+                # Si la table n’existe pas, on la crée pour stocker le texte libre
+                if not table_exists(conn, "recipe_texts"):
                     conn.execute(
-                        "INSERT INTO recipe_lines(recipe_id, ingredient_id, qty, unit, note) VALUES (?,?,?,?,?)",
-                        (rid, iid, qty, uabbr, note),
+                        """
+                        CREATE TABLE IF NOT EXISTS recipe_texts(
+                            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            recipe_id INTEGER,
+                            instructions TEXT,
+                            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+                        )
+                        """
                     )
+                    conn.commit()
 
-                # 3️⃣ Méthode
-                conn.execute("DELETE FROM recipe_texts WHERE recipe_id=?", (rid,))
-                if clean_text(method_text):
+                # UPSERT simple sur recipe_texts
+                exists = conn.execute(
+                    "SELECT text_id FROM recipe_texts WHERE recipe_id=?", (rid,)
+                ).fetchone()
+
+                if exists:
+                    conn.execute(
+                        "UPDATE recipe_texts SET instructions=? WHERE recipe_id=?",
+                        (method_text, rid),
+                    )
+                else:
                     conn.execute(
                         "INSERT INTO recipe_texts(recipe_id, instructions) VALUES (?,?)",
-                        (rid, clean_text(method_text)),
+                        (rid, method_text),
                     )
-
                 conn.commit()
 
-            st.success("Recette mise à jour avec succès ✅")
-            st.balloons()
-            st.rerun()
-
+            st.success("Méthode enregistrée ✅")
         except Exception as e:
-            st.error(f"Erreur pendant la sauvegarde : {e}")
+            st.error(f"Erreur d’enregistrement de la méthode : {e}")
 
+    st.divider()
 
-            st.success("Modifications enregistrées ✅")
-            st.rerun()
-
-        except sqlite3.IntegrityError as e:
-            st.error(f"Conflit en base (nom de recette déjà utilisé ?) : {e}")
-        except Exception as e:
-            st.error(f"Erreur pendant l’enregistrement : {e}")
+    # ======================
+    # D) Diagnostic (option)
+    # ======================
+    with connect() as conn:
+        st.caption(f"📁 Base utilisée : {DB_PATH}")
+        def yesno(name): 
+            return "oui" if table_exists(conn, name) else "non"
+        st.caption(
+            "Tables → "
+            f"recipe_lines: {yesno('recipe_lines')}, "
+            f"recipe_ingredients: {yesno('recipe_ingredients')}, "
+            f"recipe_steps: {yesno('recipe_steps')}, "
+            f"recipe_texts: {yesno('recipe_texts')}"
+        )
+        if table_exists(conn, "recipe_lines"):
+            c = conn.execute("SELECT COUNT(*) FROM recipe_lines WHERE recipe_id=?", (rid,)).fetchone()[0]
+            st.caption(f"→ Lignes d’ingrédients (recipe_lines) : {c}")
+        if table_exists(conn, "recipe_ingredients"):
+            c = conn.execute("SELECT COUNT(*) FROM recipe_ingredients WHERE recipe_id=?", (rid,)).fetchone()[0]
+            st.caption(f"→ Lignes d’ingrédients (recipe_ingredients) : {c}")
 
 # ---------- Navigation principale ----------
 def main():
