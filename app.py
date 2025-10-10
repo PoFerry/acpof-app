@@ -134,6 +134,11 @@ def clean_text(x):
         return ""
     return str(x).replace("\u00A0", " ").strip()
 
+
+def map_unit_text_to_abbr(u: str) -> Optional[str]:
+    ...
+
+
 def to_float_safe(x) -> Optional[float]:
     """Convertit une valeur texte en float de manière robuste."""
     s = clean_text(x)
@@ -233,15 +238,22 @@ def map_unit_text_to_abbr(u: str) -> Optional[str]:
     """Mappe les variantes d'unités vers une abréviation standard."""
     s = clean_text(u).lower()
     s = s.replace("é", "e").replace("è", "e").replace("ê", "e")
+    if not s:
+        return None
     aliases = {
-        "g": "g", "gramme": "g", "grammes": "g", "gr": "g",
-        "kg": "kg", "kilogramme": "kg", "kilogrammes": "kg",
-        "ml": "ml", "millilitre": "ml", "millilitres": "ml",
-        "l": "l", "litre": "l", "litres": "l",
-        "pc": "pc", "piece": "pc", "pieces": "pc",
-        "unite": "pc", "unites": "pc", "portion": "pc"
+        # masses
+        "g": "g", "/g": "g", "gramme": "g", "grammes": "g", "gr": "g",
+        "kg": "kg", "/kg": "kg", "kilogramme": "kg", "kilogrammes": "kg",
+        # volumes
+        "ml": "ml", "/ml": "ml", "millilitre": "ml", "millilitres": "ml",
+        "l": "l", "/l": "l", "litre": "l", "litres": "l",
+        # pièces / unités
+        "pc": "pc", "/pc": "pc", "piece": "pc", "pieces": "pc",
+        "unite": "pc", "/unite": "pc", "unites": "pc",
+        "portion": "pc", "/portion": "pc", "pcs": "pc", "pce": "pc", "pces": "pc",
     }
     return aliases.get(s, s)
+
 
 UNIT_GROUP = {"g": "mass", "kg": "mass", "ml": "vol", "l": "vol", "pc": "pc"}
 
