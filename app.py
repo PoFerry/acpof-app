@@ -937,15 +937,15 @@ def page_view_edit_recipe():
         ).fetchone()
 
     with connect() as conn:
-    meta = pd.read_sql_query(
-        """
-        SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
-        FROM recipes r
-        LEFT JOIN units u ON u.unit_id = r.yield_unit
-        WHERE r.recipe_id=?
-        """,
-        conn, params=(rid,)
-    )
+        meta = pd.read_sql_query(
+            """
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+            WHERE r.recipe_id=?
+            """,
+            conn, params=(rid,)
+        )
 
     ing = fetch_recipe_ingredients_df(conn, rid)
     method_text = fetch_recipe_method_text(conn, rid)
