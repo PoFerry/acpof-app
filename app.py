@@ -220,6 +220,29 @@ def ensure_db():
         )""")
 
         # Lignes ingrédients de la recette
+             conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipes(
+            recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            type TEXT,
+            yield_qty REAL,
+            yield_unit INTEGER,
+            sell_price REAL,
+            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
+        )
+        """)
+
+        # Texte / méthode de la recette
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_texts(
+            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            instructions TEXT,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+        )
+        """)
+
+        # Lignes ingrédients de la recette
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipe_lines(
             line_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -230,7 +253,8 @@ def ensure_db():
             note TEXT,
             FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id),
             FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
-        )""")
+        )
+        """)
 
         # --- Initialisation des unités par défaut ---
         conn.executemany(
