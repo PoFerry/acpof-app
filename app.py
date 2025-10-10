@@ -134,10 +134,8 @@ def clean_text(x):
         return ""
     return str(x).replace("\u00A0", " ").strip()
 
-
 def map_unit_text_to_abbr(u: str) -> Optional[str]:
-    ...
-
+    """Mappe les variantes d'unités vers une abréviation standard."""
 
 def to_float_safe(x) -> Optional[float]:
     """Convertit une valeur texte en float de manière robuste."""
