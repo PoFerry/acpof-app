@@ -8,9 +8,18 @@ import sqlite3
 import pandas as pd
 import re
 from pathlib import Path
-from pandas.errors import ParserError
-from typing import Optional, Tuple
-from streamlit.runtime.media_file_storage import MediaFileStorageError
+
+# Emplacement de la base (ex: /app/data/acpof.db). On crée le dossier si besoin.
+APP_DIR = Path(__file__).parent
+DB_PATH = APP_DIR / "data" / "acpof.db"
+
+def connect():
+    """Ouvre une connexion SQLite avec clés étrangères activées."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)  # s'assure que data/ existe
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
 
 # ---------- Configuration générale ----------
 st.set_page_config(
