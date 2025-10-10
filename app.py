@@ -134,9 +134,6 @@ def clean_text(x):
         return ""
     return str(x).replace("\u00A0", " ").strip()
 
-def map_unit_text_to_abbr(u: str) -> Optional[str]:
-    """Mappe les variantes d'unités vers une abréviation standard."""
-
 def to_float_safe(x) -> Optional[float]:
     """Convertit une valeur texte en float de manière robuste."""
     s = clean_text(x)
@@ -161,77 +158,28 @@ def connect():
 def ensure_db():
     """Crée les tables si elles n’existent pas déjà et initialise les unités."""
     with connect() as conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS units(
-            unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            abbreviation TEXT UNIQUE
-        )""")
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS ingredients(
-            ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            unit_default INTEGER,
-            cost_per_unit REAL,
-            supplier TEXT,
-            category TEXT,
-            FOREIGN KEY(unit_default) REFERENCES units(unit_id)
-        )""")
-        conn.execute("""
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipes(
-            recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            type TEXT,
-            yield_qty REAL,
-            yield_unit INTEGER,
-            sell_price REAL,
-            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
-        )""")
-
-        # Texte / méthode de la recette
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipe_texts(
-            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_id INTEGER,
-            instructions TEXT,
-            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
-        )""")
-
-        # Lignes ingrédients de la recette
-                conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipes(
-            recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            type TEXT,
-            yield_qty REAL,
-            yield_unit INTEGER,
-            sell_price REAL,
-            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
-        )""")
-
-        # Texte / méthode de la recette
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipe_texts(
-            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recipe_id INTEGER,
-            instructions TEXT,
-            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
-        )""")
-
-        # Lignes ingrédients de la recette
-             conn.execute("""
-        CREATE TABLE IF NOT EXISTS recipes(
-            recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            type TEXT,
-            yield_qty REAL,
-            yield_unit INTEGER,
-            sell_price REAL,
-            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
+        
+               conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS units(
+                unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                abbreviation TEXT UNIQUE
+            )
+            """
         )
-        """)
-
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ingredients(
+                ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                unit_default INTEGER,
+                cost_per_unit REAL,
+                supplier TEXT,
+                category TEXT,
+                FOREIGN KEY(unit_default) REFERENCES units(unit_id)
+            )
+            """
         # Texte / méthode de la recette
         conn.execute("""
         CREATE TABLE IF NOT EXISTS recipe_texts(
