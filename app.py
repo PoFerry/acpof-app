@@ -148,76 +148,62 @@ def to_float_safe(x) -> Optional[float]:
     except (ValueError, TypeError):
         return None
 
-def connect():
-    """Connexion SQLite avec activation des clés étrangères."""
-    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-# ---------- Initialisation de la base ----------
 def ensure_db():
-    """Crée les tables si elles n’existent pas déjà et initialise les unités."""
+    """Crée les tables SQLite si elles n'existent pas déjà."""
     with connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS units(
-                unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                abbreviation TEXT UNIQUE
-            )
-            """
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS units(
+            unit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            abbreviation TEXT UNIQUE
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ingredients(
-                ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                unit_default INTEGER,
-                cost_per_unit REAL,
-                supplier TEXT,
-                category TEXT,
-                FOREIGN KEY(unit_default) REFERENCES units(unit_id)
-            )
-            """
-        )
+        """)
 
-       conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recipes(
-                recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                type TEXT,
-                yield_qty REAL,
-                yield_unit INTEGER,
-                FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
-            )
-            """
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS ingredients(
+            ingredient_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            unit_default INTEGER,
+            cost_per_unit REAL,
+            supplier TEXT,
+            category TEXT,
+            FOREIGN KEY(unit_default) REFERENCES units(unit_id)
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recipe_texts(
-                text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                recipe_id INTEGER,
-                instructions TEXT,
-                FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id) ON DELETE CASCADE
-            )
-            """
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipes(
+            recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            type TEXT,
+            yield_qty REAL,
+            yield_unit INTEGER,
+            sell_price REAL,
+            FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recipe_lines(
-                line_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                recipe_id INTEGER,
-                ingredient_id INTEGER,
-                qty REAL,
-                unit TEXT,
-                note TEXT,
-                FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id) ON DELETE CASCADE,
-                FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
-            )
-            """
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_texts(
+            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            instructions TEXT,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
         )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS recipe_lines(
+            line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            ingredient_id INTEGER,
+            qty REAL,
+            unit TEXT,
+            note TEXT,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id),
+            FOREIGN KEY(ingredient_id) REFERENCES ingredients(ingredient_id)
+        )
+        """)
 
         # --- Initialisation des unités par défaut ---
         conn.executemany(
@@ -232,6 +218,7 @@ def ensure_db():
         )
 
         conn.commit()
+
 
 # ---------- Fonctions unités ----------
 def map_unit_text_to_abbr(u: str) -> Optional[str]:
