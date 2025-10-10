@@ -978,7 +978,7 @@ with colB:
 
     # ---------- Métadonnées ----------
 r = meta.iloc[0]
-    st.subheader("Informations de base")
+st.subheader("Informations de base")  # ✅ aligné à gauche, sans indentation
     colA, colB, colC = st.columns([2, 1, 1])
     with colA:
         new_name = st.text_input("Nom", value=r["name"])
