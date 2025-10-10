@@ -779,6 +779,7 @@ def page_view_edit_recipe():
     """
     Page unique pour : sélectionner une recette, afficher toutes ses infos,
     éditer (métadonnées + ingrédients + méthode) et enregistrer en BD.
+    Compatible avec tables: recipes, recipe_lines, ingredients, recipe_texts.
     """
     st.header("📖 Consulter & corriger une recette")
 
@@ -790,6 +791,7 @@ def page_view_edit_recipe():
         units = pd.read_sql_query(
             "SELECT unit_id, abbreviation FROM units ORDER BY abbreviation", conn
         )
+
     if recipes.empty:
         st.info("Aucune recette en base.")
         return
@@ -797,23 +799,26 @@ def page_view_edit_recipe():
     rec_name = st.selectbox("Choisir une recette :", recipes["name"].tolist(), index=0)
     rid = int(recipes.loc[recipes["name"] == rec_name, "recipe_id"].iloc[0])
 
-    # Charger métadonnées + ingrédients (ordre de saisi) + méthode
+    # Charger métadonnées, ingrédients, méthode
     with connect() as conn:
         meta = pd.read_sql_query(
-            "SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price "
-            "FROM recipes r LEFT JOIN units u ON u.unit_id = r.yield_unit "
-            "WHERE r.recipe_id=?",
+            """
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+            WHERE r.recipe_id=?
+            """,
             conn, params=(rid,)
         )
 
-        # IMPORTANT: on garde l'ordre d'insertion (ri.id)
         ing = pd.read_sql_query(
-            "SELECT ri.id AS line_id, i.name AS ingredient, ri.quantity AS qty, u.abbreviation AS unit "
-            "FROM recipe_ingredients ri "
-            "JOIN ingredients i ON i.ingredient_id = ri.ingredient_id "
-            "LEFT JOIN units u ON u.unit_id = ri.unit "
-            "WHERE ri.recipe_id=? "
-            "ORDER BY ri.id",
+            """
+            SELECT rl.line_id, i.name AS ingredient, rl.qty AS qty, rl.unit AS unit, rl.note
+            FROM recipe_lines rl
+            LEFT JOIN ingredients i ON i.ingredient_id = rl.ingredient_id
+            WHERE rl.recipe_id=?
+            ORDER BY rl.line_id
+            """,
             conn, params=(rid,)
         )
 
@@ -823,7 +828,7 @@ def page_view_edit_recipe():
 
     # ---------- Métadonnées ----------
     r = meta.iloc[0]
-    st.subheader("Informations")
+    st.subheader("Informations de base")
     colA, colB, colC = st.columns([2, 1, 1])
     with colA:
         new_name = st.text_input("Nom", value=r["name"])
@@ -838,25 +843,27 @@ def page_view_edit_recipe():
         new_yield_unit = st.selectbox(
             "Rendement - unité",
             options=[""] + unit_choices,
-            index=(unit_choices.index(r["yield_unit"]) + 1) if pd.notna(r["yield_unit"]) and r["yield_unit"] in unit_choices else 0
+            index=(unit_choices.index(r["yield_unit"]) + 1)
+            if pd.notna(r["yield_unit"]) and r["yield_unit"] in unit_choices else 0
         )
     with colC:
         new_sell_price = st.number_input(
-            "Prix de vente",
+            "Prix de vente ($)",
             min_value=0.0,
             value=float(r["sell_price"]) if pd.notna(r["sell_price"]) else 0.0,
             step=0.1, format="%.2f"
         )
 
     # ---------- Ingrédients ----------
-    st.subheader("Ingrédients (ordre conservé)")
+    st.subheader("🥕 Ingrédients (ordre d'origine conservé)")
     if ing.empty:
-        ing_edit = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité"])
+        ing_edit = pd.DataFrame(columns=["Ingrédient", "Quantité", "Unité", "Note"])
     else:
         ing_edit = pd.DataFrame({
             "Ingrédient": ing["ingredient"].map(clean_text),
             "Quantité": ing["qty"],
             "Unité": ing["unit"].fillna(""),
+            "Note": ing["note"].fillna(""),
         })
 
     ing_edit = st.data_editor(
@@ -866,14 +873,17 @@ def page_view_edit_recipe():
         column_config={
             "Ingrédient": st.column_config.TextColumn(help="Nom exact (créé si nouveau)"),
             "Quantité": st.column_config.NumberColumn(format="%.3f", step=0.01),
-            "Unité": st.column_config.SelectboxColumn(options=[""] + unit_choices, help="UDM de la quantité"),
+            "Unité": st.column_config.SelectboxColumn(
+                options=["", "g", "kg", "ml", "l", "pc"], help="UDM de la quantité"
+            ),
+            "Note": st.column_config.TextColumn(help="Optionnel: précision, préparation..."),
         },
         key="view_edit_ing_editor",
     )
-    st.caption("Tu peux ajouter/supprimer des lignes; l’ordre d’affichage sera conservé à l’enregistrement.")
+    st.caption("Tu peux ajouter ou supprimer des lignes; l’ordre affiché sera conservé.")
 
     # ---------- Méthode ----------
-    st.subheader("Méthode de préparation")
+    st.subheader("📋 Méthode de préparation")
     method_text = st.text_area(
         "Instructions (texte libre)",
         value=(txt_row[0] if txt_row and txt_row[0] else ""),
@@ -889,7 +899,6 @@ def page_view_edit_recipe():
             st.error("Le nom de la recette ne peut pas être vide.")
             return
 
-        # Préparer data pour écriture
         ing_rows = []
         for _, row in ing_edit.iterrows():
             ing_name = clean_text(row.get("Ingrédient", ""))
@@ -897,15 +906,15 @@ def page_view_edit_recipe():
                 continue
             qty = to_float_safe(row.get("Quantité"))
             uabbr = map_unit_text_to_abbr(row.get("Unité"))
-            ing_rows.append((ing_name, qty, uabbr))
+            note = clean_text(row.get("Note", ""))
+            ing_rows.append((ing_name, qty, uabbr, note))
 
         try:
             with connect() as conn:
                 conn.execute("BEGIN")
-
                 yuid = unit_id_by_abbr(conn, new_yield_unit) if new_yield_unit else None
 
-                # 1) Maj recette
+                # 1️⃣ Mise à jour recette
                 conn.execute(
                     "UPDATE recipes SET name=?, type=?, yield_qty=?, yield_unit=?, sell_price=? WHERE recipe_id=?",
                     (
@@ -914,29 +923,49 @@ def page_view_edit_recipe():
                         new_yield_qty if new_yield_qty > 0 else None,
                         yuid,
                         new_sell_price if new_sell_price > 0 else None,
-                        rid
-                    )
+                        rid,
+                    ),
                 )
 
-                # 2) Réécriture des ingrédients (ordre = insertion → on garde l’ordre saisi)
-                conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (rid,))
-                for (ing_name, qty, uabbr) in ing_rows:
-                    iid = find_ingredient_id(conn, ing_name)  # crée si inexistant
-                    uid = unit_id_by_abbr(conn, uabbr) if uabbr else None
+                # 2️⃣ Réécriture ingrédients
+                conn.execute("DELETE FROM recipe_lines WHERE recipe_id=?", (rid,))
+                for (ing_name, qty, uabbr, note) in ing_rows:
+                    iid = conn.execute(
+                        "SELECT ingredient_id FROM ingredients WHERE name=?",
+                        (ing_name,),
+                    ).fetchone()
+                    if not iid:
+                        conn.execute(
+                            "INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)",
+                            (ing_name,),
+                        )
+                        iid = conn.execute(
+                            "SELECT ingredient_id FROM ingredients WHERE name=?",
+                            (ing_name,),
+                        ).fetchone()
+                    iid = iid[0]
                     conn.execute(
-                        "INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit) VALUES (?,?,?,?)",
-                        (rid, iid, qty, uid)
+                        "INSERT INTO recipe_lines(recipe_id, ingredient_id, qty, unit, note) VALUES (?,?,?,?,?)",
+                        (rid, iid, qty, uabbr, note),
                     )
 
-                # 3) Méthode (texte)
+                # 3️⃣ Méthode
                 conn.execute("DELETE FROM recipe_texts WHERE recipe_id=?", (rid,))
                 if clean_text(method_text):
                     conn.execute(
                         "INSERT INTO recipe_texts(recipe_id, instructions) VALUES (?,?)",
-                        (rid, clean_text(method_text))
+                        (rid, clean_text(method_text)),
                     )
 
                 conn.commit()
+
+            st.success("Recette mise à jour avec succès ✅")
+            st.balloons()
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Erreur pendant la sauvegarde : {e}")
+
 
             st.success("Modifications enregistrées ✅")
             st.rerun()
