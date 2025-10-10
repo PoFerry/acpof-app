@@ -691,21 +691,79 @@ def page_view_recipes():
     st.dataframe(df, width="stretch")
 
 def page_edit_recipe():
-    app_header("Corriger une recette", "Modifier les informations d’une recette existante")
+    app_header("Corriger une recette", "Modifier les informations, ingrédients et méthode")
+
     with connect() as conn:
-        df = pd.read_sql_query("SELECT recipe_id, name, type, yield_qty FROM recipes", conn)
+        df = pd.read_sql_query("SELECT recipe_id, name, type, yield_qty FROM recipes ORDER BY name", conn)
+        units = pd.read_sql_query("SELECT abbreviation FROM units", conn)
+
     if df.empty:
         st.warning("Aucune recette à corriger.")
         return
+
     recipe_choice = st.selectbox("Sélectionnez une recette :", df["name"])
     row = df[df["name"] == recipe_choice].iloc[0]
+    rid = int(row["recipe_id"])
+
     new_type = st.text_input("Type", row["type"])
     new_yield = st.number_input("Rendement", min_value=0.0, value=row["yield_qty"])
-    if st.button("Mettre à jour"):
+    yunit = st.selectbox("Unité de rendement", units["abbreviation"])
+
+    st.markdown("### 🥕 Ingrédients")
+    with connect() as conn:
+        df_lines = pd.read_sql_query("""
+            SELECT rl.line_id, i.name AS ingrédient, rl.qty AS quantité, rl.unit AS unité, rl.note
+            FROM recipe_lines rl
+            LEFT JOIN ingredients i ON rl.ingredient_id = i.ingredient_id
+            WHERE rl.recipe_id=?
+        """, conn, params=(rid,))
+    if df_lines.empty:
+        df_lines = pd.DataFrame(columns=["ingrédient", "quantité", "unité", "note"])
+
+    edit_df = st.data_editor(
+        df_lines.rename(columns={"ingrédient": "Ingrédient", "quantité": "Quantité", "unité": "Unité", "note": "Note"}),
+        num_rows="dynamic",
+        width="stretch",
+        column_config={
+            "Ingrédient": st.column_config.TextColumn(help="Nom de l’ingrédient"),
+            "Quantité": st.column_config.TextColumn(help="Ex: 0.250"),
+            "Unité": st.column_config.SelectboxColumn(options=["g", "kg", "ml", "l", "pc"]),
+            "Note": st.column_config.TextColumn(),
+        },
+        key="edit_recipe_ing",
+    )
+
+    st.markdown("### 📋 Méthode de préparation")
+    with connect() as conn:
+        existing_text = conn.execute("SELECT instructions FROM recipe_texts WHERE recipe_id=?", (rid,)).fetchone()
+    method = st.text_area("Instructions", existing_text[0] if existing_text else "", height=200)
+
+    if st.button("💾 Enregistrer les modifications", type="primary"):
         with connect() as conn:
-            conn.execute("UPDATE recipes SET type=?, yield_qty=? WHERE recipe_id=?",
-                         (new_type, new_yield, row["recipe_id"]))
+            uid = conn.execute("SELECT unit_id FROM units WHERE abbreviation=?", (yunit,)).fetchone()
+            uid = uid[0] if uid else None
+            conn.execute("UPDATE recipes SET type=?, yield_qty=?, yield_unit=? WHERE recipe_id=?",
+                         (new_type.strip(), new_yield, uid, rid))
+            conn.execute("DELETE FROM recipe_lines WHERE recipe_id=?", (rid,))
+            for _, row in edit_df.iterrows():
+                ing_name = clean_text(row["Ingrédient"])
+                qty = to_float_safe(row["Quantité"])
+                u = map_unit_text_to_abbr(row["Unité"])
+                note = clean_text(row["Note"])
+                if not ing_name:
+                    continue
+                iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                if not iid:
+                    conn.execute("INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)", (ing_name,))
+                    iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+                iid = iid[0]
+                conn.execute("INSERT INTO recipe_lines(recipe_id, ingredient_id, qty, unit, note) VALUES (?,?,?,?,?)",
+                             (rid, iid, qty, u, note))
+            conn.execute("DELETE FROM recipe_texts WHERE recipe_id=?", (rid,))
+            conn.execute("INSERT INTO recipe_texts(recipe_id, instructions) VALUES (?,?)", (rid, method.strip()))
             conn.commit()
+        st.success("Recette mise à jour avec succès ✅")
+
         st.success("Recette mise à jour.")
 
 # ---------- Navigation principale ----------
