@@ -10,6 +10,22 @@ import re
 from pathlib import Path
 from typing import Optional, Tuple
 
+# --- Détection automatique du bon fichier BD ---
+APP_DIR = Path(__file__).parent
+OLD_DB = APP_DIR / "acpof.db"
+NEW_DB = APP_DIR / "data" / "acpof.db"
+DB_PATH = OLD_DB if OLD_DB.exists() else NEW_DB
+
+def connect():
+    """Ouvre une connexion SQLite avec clés étrangères activées."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+from typing import Optional, Tuple
+
 
 # Emplacement de la base (ex: /app/data/acpof.db). On crée le dossier si besoin.
 APP_DIR = Path(__file__).parent
@@ -285,6 +301,110 @@ def convert_unit_price(cpu: Optional[float], from_u: Optional[str], to_u: Option
     if qty_from_for_one_to is None:
         return None
     return cpu * qty_from_for_one_to
+
+def table_exists(conn, table_name: str) -> bool:
+    r = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    ).fetchone()
+    return r is not None
+
+
+def fetch_recipe_ingredients_df(conn, recipe_id: int) -> pd.DataFrame:
+    """Retourne les ingrédients d'une recette, selon le bon schéma (recipe_lines ou recipe_ingredients)."""
+    # Nouveau schéma
+    if table_exists(conn, "recipe_lines"):
+        df = pd.read_sql_query(
+            """
+            SELECT rl.line_id, i.name AS ingredient, rl.qty AS qty, rl.unit AS unit, rl.note
+            FROM recipe_lines rl
+            LEFT JOIN ingredients i ON i.ingredient_id = rl.ingredient_id
+            WHERE rl.recipe_id=?
+            ORDER BY rl.line_id
+            """,
+            conn, params=(recipe_id,)
+        )
+        if not df.empty:
+            return df
+
+    # Ancien schéma
+    if table_exists(conn, "recipe_ingredients"):
+        df = pd.read_sql_query(
+            """
+            SELECT ri.id AS line_id,
+                   i.name AS ingredient,
+                   ri.quantity AS qty,
+                   u.abbreviation AS unit,
+                   '' AS note
+            FROM recipe_ingredients ri
+            JOIN ingredients i ON i.ingredient_id = ri.ingredient_id
+            LEFT JOIN units u ON u.unit_id = ri.unit
+            WHERE ri.recipe_id=?
+            ORDER BY ri.id
+            """,
+            conn, params=(recipe_id,)
+        )
+        return df
+
+    return pd.DataFrame(columns=["line_id", "ingredient", "qty", "unit", "note"])
+
+
+def upsert_recipe_ingredients(conn, recipe_id: int, rows: list[tuple[str, Optional[float], Optional[str], str]]):
+    """Réécrit les ingrédients d'une recette dans la table existante (recipe_lines ou recipe_ingredients)."""
+    if table_exists(conn, "recipe_lines"):
+        conn.execute("DELETE FROM recipe_lines WHERE recipe_id=?", (recipe_id,))
+        for (ing_name, qty, uabbr, note) in rows:
+            iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+            if not iid:
+                conn.execute("INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)", (ing_name,))
+                iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+            iid = iid[0]
+            conn.execute(
+                "INSERT INTO recipe_lines(recipe_id, ingredient_id, qty, unit, note) VALUES (?,?,?,?,?)",
+                (recipe_id, iid, qty, uabbr, note),
+            )
+        return
+
+    if table_exists(conn, "recipe_ingredients"):
+        conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id=?", (recipe_id,))
+        for (ing_name, qty, uabbr, note) in rows:
+            iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+            if not iid:
+                conn.execute("INSERT INTO ingredients(name, unit_default) VALUES (?, NULL)", (ing_name,))
+                iid = conn.execute("SELECT ingredient_id FROM ingredients WHERE name=?", (ing_name,)).fetchone()
+            iid = iid[0]
+            uid = conn.execute(
+                "SELECT unit_id FROM units WHERE LOWER(abbreviation)=LOWER(?)",
+                (uabbr,)
+            ).fetchone()
+            uid = uid[0] if uid else None
+            conn.execute(
+                "INSERT INTO recipe_ingredients(recipe_id, ingredient_id, quantity, unit) VALUES (?,?,?,?)",
+                (recipe_id, iid, qty, uid),
+            )
+        return
+def fetch_recipe_method_text(conn, recipe_id: int) -> str:
+    """Retourne le texte de la méthode (depuis recipe_texts ou reconstruit depuis recipe_steps)."""
+    txt = conn.execute(
+        "SELECT instructions FROM recipe_texts WHERE recipe_id=?", (recipe_id,)
+    ).fetchone()
+    if txt and txt[0]:
+        return str(txt[0])
+
+    if table_exists(conn, "recipe_steps"):
+        steps = pd.read_sql_query(
+            "SELECT step_no, instruction, time_minutes FROM recipe_steps WHERE recipe_id=? ORDER BY step_no",
+            conn, params=(recipe_id,)
+        )
+        if not steps.empty:
+            lines = []
+            for _, r in steps.iterrows():
+                badge = f" (≈ {int(r['time_minutes'])} min)" if pd.notna(r['time_minutes']) else ""
+                lines.append(f"{int(r['step_no'])}. {r['instruction']}{badge}")
+            return "\n".join(lines)
+
+    return ""
+
 
 # ---------- Lecture CSV robuste ----------
 def read_uploaded_csv(uploaded_file) -> pd.DataFrame:
@@ -815,6 +935,25 @@ def page_view_edit_recipe():
         txt_row = conn.execute(
             "SELECT instructions FROM recipe_texts WHERE recipe_id=?", (rid,)
         ).fetchone()
+
+    with connect() as conn:
+    meta = pd.read_sql_query(
+        """
+        SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
+        FROM recipes r
+        LEFT JOIN units u ON u.unit_id = r.yield_unit
+        WHERE r.recipe_id=?
+        """,
+        conn, params=(rid,)
+    )
+
+    ing = fetch_recipe_ingredients_df(conn, rid)
+    method_text = fetch_recipe_method_text(conn, rid)
+
+    st.dataframe(ing, use_container_width=True)
+st.text_area("Méthode / instructions", value=method_text, height=200)
+
+upsert_recipe_ingredients(conn, rid, ing_rows)
 
 
 
