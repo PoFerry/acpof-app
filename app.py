@@ -800,21 +800,21 @@ def page_view_edit_recipe():
     rid = int(recipes.loc[recipes["name"] == rec_name, "recipe_id"].iloc[0])
 
     # Charger métadonnées, ingrédients, méthode
-  with connect() as conn:
-    meta = pd.read_sql_query(
-        """
-        SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
-        FROM recipes r
-        LEFT JOIN units u ON u.unit_id = r.yield_unit
-        WHERE r.recipe_id=?
-        """,
-        conn, params=(rid,)
-    )
+    with connect() as conn:
+        meta = pd.read_sql_query(
+            """
+            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
+            FROM recipes r
+            LEFT JOIN units u ON u.unit_id = r.yield_unit
+            WHERE r.recipe_id=?
+            """,
+            conn, params=(rid,)
+        )
 
-    ing = fetch_recipe_ingredients_df(conn, rid)  # <<< ICI
-    txt_row = conn.execute(
-        "SELECT instructions FROM recipe_texts WHERE recipe_id=?", (rid,)
-    ).fetchone()
+        ing = fetch_recipe_ingredients_df(conn, rid)  # <<< ICI
+        txt_row = conn.execute(
+            "SELECT instructions FROM recipe_texts WHERE recipe_id=?", (rid,)
+        ).fetchone()
 
 
 
