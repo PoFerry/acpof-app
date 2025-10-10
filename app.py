@@ -957,8 +957,7 @@ def main():
             "📦 Importation données",
             "🥕 Ingrédients",
             "🧾 Créer recette",
-            "📖 Consulter recettes",
-            "✏️ Corriger recette",
+            "✏️ 📖 Consulter et Corriger recette",
             "💰 Coût des recettes",
             "🛒 Planifier achats",
         ],
@@ -973,8 +972,6 @@ def main():
         page_manage_ingredients()
     elif page.startswith("🧾"):
         page_create_recipe()
-    elif page.startswith("📖"):
-        page_view_recipes()
     elif page.startswith("✏️"):
         page_edit_recipe()
     elif page.startswith("💰"):
