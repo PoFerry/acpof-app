@@ -958,7 +958,7 @@ upsert_recipe_ingredients(conn, rid, ing_rows)
 
 
     # ---------- Métadonnées ----------
-    r = meta.iloc[0]
+r = meta.iloc[0]
     st.subheader("Informations de base")
     colA, colB, colC = st.columns([2, 1, 1])
     with colA:
