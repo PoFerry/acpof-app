@@ -178,6 +178,7 @@ def ensure_db():
             FOREIGN KEY(unit_default) REFERENCES units(unit_id)
         )""")
         conn.execute("""
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS recipes(
             recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
@@ -187,14 +188,18 @@ def ensure_db():
             sell_price REAL,
             FOREIGN KEY(yield_unit) REFERENCES units(unit_id)
         )""")
+
+        # Texte / méthode de la recette
         conn.execute("""
-CREATE TABLE IF NOT EXISTS recipe_texts(
-    text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    recipe_id INTEGER,
-    instructions TEXT,
-    FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
-)
-""")
+        CREATE TABLE IF NOT EXISTS recipe_texts(
+            text_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipe_id INTEGER,
+            instructions TEXT,
+            FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
+        )""")
+
+        # Lignes ingrédients de la recette
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS recipe_lines(
             line_id INTEGER PRIMARY KEY AUTOINCREMENT,
             recipe_id INTEGER,
@@ -218,18 +223,7 @@ CREATE TABLE IF NOT EXISTS recipe_texts(
             ],
         )
 
-        conn.execute("""
-CREATE TABLE IF NOT EXISTS recipe_texts(
-    text_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    recipe_id INTEGER,
-    instructions TEXT,
-    FOREIGN KEY(recipe_id) REFERENCES recipes(recipe_id)
-)
-""")
         conn.commit()
-# ===============================================================
-# Partie 2 / 3 — Importation ingrédients + recettes et conversions
-# ===============================================================
 
 # ---------- Fonctions unités ----------
 def map_unit_text_to_abbr(u: str) -> Optional[str]:
