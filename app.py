@@ -979,7 +979,8 @@ with colB:
     # ---------- Métadonnées ----------
 r = meta.iloc[0]
 st.subheader("Informations de base")  # ✅ aligné à gauche, sans indentation
-    colA, colB, colC = st.columns([2, 1, 1])
+    
+colA, colB, colC = st.columns([2, 1, 1])
     with colA:
         new_name = st.text_input("Nom", value=r["name"])
         new_type = st.text_input("Catégorie / type", value=(r["type"] or ""))
