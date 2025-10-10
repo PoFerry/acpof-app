@@ -920,42 +920,61 @@ def page_view_edit_recipe():
     rid = int(recipes.loc[recipes["name"] == rec_name, "recipe_id"].iloc[0])
 
     # Charger métadonnées, ingrédients, méthode
-    with connect() as conn:
-        meta = pd.read_sql_query(
-            """
-            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
-            FROM recipes r
-            LEFT JOIN units u ON u.unit_id = r.yield_unit
-            WHERE r.recipe_id=?
-            """,
-            conn, params=(rid,)
-        )
-
-        ing = fetch_recipe_ingredients_df(conn, rid)  # <<< ICI
-        txt_row = conn.execute(
-            "SELECT instructions FROM recipe_texts WHERE recipe_id=?", (rid,)
-        ).fetchone()
-
-    with connect() as conn:
-        meta = pd.read_sql_query(
-            """
-            SELECT r.recipe_id, r.name, r.type, r.yield_qty, u.abbreviation AS yield_unit, r.sell_price
-            FROM recipes r
-            LEFT JOIN units u ON u.unit_id = r.yield_unit
-            WHERE r.recipe_id=?
-            """,
-            conn, params=(rid,)
-        )
+    # ---------- Chargement des données ----------
+with connect() as conn:
+    meta = pd.read_sql_query(
+        """
+        SELECT r.recipe_id, r.name, r.type, r.yield_qty, 
+               u.abbreviation AS yield_unit, r.sell_price
+        FROM recipes r
+        LEFT JOIN units u ON u.unit_id = r.yield_unit
+        WHERE r.recipe_id=?
+        """,
+        conn, params=(rid,)
+    )
 
     ing = fetch_recipe_ingredients_df(conn, rid)
     method_text = fetch_recipe_method_text(conn, rid)
 
-    st.dataframe(ing, use_container_width=True)
-st.text_area("Méthode / instructions", value=method_text, height=200)
+# ---------- Affichage ----------
+st.subheader("Ingrédients")
+st.dataframe(ing, use_container_width=True)
 
-upsert_recipe_ingredients(conn, rid, ing_rows)
+st.subheader("Méthode / instructions")
+method_text = st.text_area("Texte de la méthode", value=method_text, height=200)
 
+# ---------- Sauvegarde ----------
+if st.button("💾 Enregistrer les modifications"):
+    with connect() as conn:
+        upsert_recipe_ingredients(conn, rid, ing_rows)
+        conn.execute(
+            "UPDATE recipe_texts SET instructions=? WHERE recipe_id=?",
+            (method_text, rid)
+        )
+        conn.commit()
+    st.success("Recette mise à jour avec succès ✅")
 
+# ---------- Métadonnées ----------
+r = meta.iloc[0]
+st.subheader("Informations de base")
+
+colA, colB, colC = st.columns([2, 1, 1])
+with colA:
+    new_name = st.text_input("Nom", value=r["name"])
+    new_type = st.text_input("Catégorie / type", value=(r["type"] or ""))
+with colB:
+    new_yield_qty = st.number_input(
+        "Rendement - quantité", min_value=0.0,
+        value=float(r["yield_qty"]) if pd.notna(r["yield_qty"]) else 0.0,
+        step=0.1, format="%.3f"
+    )
+    unit_choices = units["abbreviation"].tolist()
+    new_yield_unit = st.selectbox(
+        "Rendement - unité",
+        options=[""] + unit_choices,
+        index=(unit_choices.index(r["yield_unit"]) + 1)
+        if pd.notna(r["yield_unit"]) and r["yield_unit"] in unit_choices else 0
+    )
 
     # ---------- Métadonnées ----------
 r = meta.iloc[0]
